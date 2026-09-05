@@ -1,0 +1,74 @@
+name: folia
+description: "XPDF - Open, read, and manage your PDF files."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # Provider for state management (ChangeNotifier-based)
+  provider: ^6.1.2
+
+  # Pick files from the device filesystem
+  file_picker: ^12.0.0
+
+  # Persistent key-value storage (stores recent files as JSON)
+  shared_preferences: ^2.3.3
+
+  # PDF rendering widget built on PDFium (native rendering engine)
+  pdfrx: ^2.4.7
+
+  # Formatting file sizes and dates in human-readable form
+  intl: ^0.19.0
+  share_plus: ^13.3.0
+
+  # Pick images from the gallery or camera for the Images-to-PDF feature
+  image_picker: ^1.1.2
+
+  # Generate PDF documents from picked images (pure-Dart PDF writer)
+  pdf: ^3.11.2
+
+  # Open generated PDFs with the system's default viewer
+  open_filex: ^4.7.0
+
+  # HTTP client for downloading PDFs from URLs
+  http: ^1.2.2
+
+  # Locates the app documents directory for saving downloaded files
+  path_provider: ^2.1.5
+  cunning_document_scanner: ^3.0.1
+
+  # Query camera permission status for the Scan feature (Settings screen)
+  permission_handler: ^12.0.0+1
+
+  # Read the app version dynamically for the About section
+  package_info_plus: ^10.2.1
+  google_fonts: ^8.2.1
+
+  # Receive PDFs opened via Android's "Open with" / share sheet (ACTION_VIEW)
+  receive_sharing_intent: ^1.9.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter:
+  uses-material-design: true
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  remove_alpha_ios: true
+  image_path: "lib/assets/icon/app_icon.png"
+  min_sdk_android: 24
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "lib/assets/icon/app_icon.png"
