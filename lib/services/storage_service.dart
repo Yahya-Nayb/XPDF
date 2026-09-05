@@ -2,17 +2,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/recent_file.dart';
 import '../models/folder.dart';
+import '../models/pdf_annotation.dart';
 
 /// Handles all reads and writes to SharedPreferences.
 ///
 /// The entire recent-files list is stored as a single JSON string under
 /// the key "recent_files". Folders are stored separately under "folders"
 /// so the two lists never mix. Dark mode preference is stored separately
-/// under the key "dark_mode".
+/// under the key "dark_mode". PDF highlight annotations live under their own
+/// "pdf_annotations" key so they never collide with any of the above.
 class StorageService {
   static const String _recentFilesKey = 'recent_files';
   static const String _foldersKey = 'folders';
   static const String _darkModeKey = 'dark_mode';
+  static const String _annotationsKey = 'pdf_annotations';
 
   // Reading-defaults settings (Settings screen). The page-layout value is a
   // plain string: "single" or "continuous" ("continuous" = current default).
@@ -65,6 +68,30 @@ class StorageService {
   static Future<void> saveFolders(List<Folder> folders) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_foldersKey, Folder.encodeList(folders));
+  }
+
+  // -- PDF annotations -------------------------------------------------------
+
+  /// Load the saved list of highlight annotations.
+  ///
+  /// If nothing has been saved yet (first launch), returns an empty list.
+  static Future<List<PdfAnnotation>> loadAnnotations() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonString = prefs.getString(_annotationsKey);
+    if (jsonString == null || jsonString.isEmpty) {
+      return [];
+    }
+    return PdfAnnotation.decodeList(jsonString);
+  }
+
+  /// Persist the full list of annotations (same whole-list strategy; the
+  /// annotations for every PDF share one key).
+  static Future<void> saveAnnotations(List<PdfAnnotation> annotations) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _annotationsKey,
+      PdfAnnotation.encodeList(annotations),
+    );
   }
 
   // -- Reading defaults ------------------------------------------------------

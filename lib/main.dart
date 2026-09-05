@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'colors.dart';
+import 'providers/annotations_provider.dart';
 import 'providers/folders_provider.dart';
 import 'providers/recent_files_provider.dart';
 import 'providers/settings_provider.dart';
@@ -95,6 +96,9 @@ class FoliaApp extends StatelessWidget {
 
         // Reading-defaults settings (page layout mode, remember last page).
         ChangeNotifierProvider(create: (_) => SettingsProvider()),
+
+        // User-created PDF highlight annotations, grouped by file path.
+        ChangeNotifierProvider(create: (_) => AnnotationsProvider()),
       ],
       child: Consumer<ThemeProvider>(
         builder: (context, themeProvider, _) {

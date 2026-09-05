@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../colors.dart';
 import '../models/recent_file.dart';
+import '../providers/annotations_provider.dart';
 import '../providers/folders_provider.dart';
 import '../providers/recent_files_provider.dart';
 import '../providers/settings_provider.dart';
@@ -58,6 +59,9 @@ class _HomeScreenState extends State<HomeScreen> {
       context.read<RecentFilesProvider>().loadFiles();
       context.read<FoldersProvider>().loadFolders();
       context.read<SettingsProvider>().loadSettings();
+      // Hydrate saved highlight annotations too, so opening a viewer never
+      // has to wait for a lazy read.
+      context.read<AnnotationsProvider>().loadAll();
     });
   }
 
