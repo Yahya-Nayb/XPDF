@@ -22,6 +22,11 @@ class StorageService {
   static const String _pageLayoutKey = 'default_page_layout';
   static const String _rememberLastPageKey = 'remember_last_page';
 
+  /// Whether the viewer inverts PDF page colors for night reading. Separate
+  /// from the app-wide dark theme (that is just UI chrome); this one flips
+  /// the page pixels themselves, like an e-reader's night mode.
+  static const String _nightModeKey = 'night_mode';
+
   // File-list sort order ("recent", "name_asc", "name_desc",
   // "size_largest", "size_smallest"). Default = insertion order recency.
   static const String _sortModeKey = 'sort_mode';
@@ -122,6 +127,20 @@ class StorageService {
   static Future<void> saveRememberLastPage(bool value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_rememberLastPageKey, value);
+  }
+
+  /// Load the night-mode preference (inverted PDF page colors).
+  ///
+  /// Defaults to `false` — pages render as printed until the user opts in.
+  static Future<bool> loadNightMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_nightModeKey) ?? false;
+  }
+
+  /// Persist the night-mode preference.
+  static Future<void> saveNightMode(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_nightModeKey, value);
   }
 
   // -- File-list sort order ----------------------------------------------------

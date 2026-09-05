@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
+
 import '../services/storage_service.dart';
+
 /// Central state for the reading-defaults settings on the Settings screen.
 ///
 /// Follows the same pattern as ThemeProvider: loaded once at app start,
@@ -16,6 +18,11 @@ class SettingsProvider extends ChangeNotifier {
 
   String _pageLayoutMode = defaultPageLayoutMode;
   bool _rememberLastPage = true;
+
+  /// Inverts the rendered PDF page colors (white→dark, black→light). This is
+  /// a reading preference for the viewer itself, independent of the app-wide
+  /// light/dark UI theme ([ThemeProvider]).
+  bool _nightMode = false;
   bool _loaded = false;
 
   // -- Public getters --------------------------------------------------------
@@ -24,6 +31,7 @@ class SettingsProvider extends ChangeNotifier {
   String get pageLayoutMode => _pageLayoutMode;
   bool get isSinglePageLayout => _pageLayoutMode == 'single';
   bool get rememberLastPage => _rememberLastPage;
+  bool get isNightMode => _nightMode;
   bool get isLoaded => _loaded;
 
   // -- Initialization --------------------------------------------------------
@@ -32,10 +40,13 @@ class SettingsProvider extends ChangeNotifier {
   Future<void> loadSettings() async {
     _pageLayoutMode = await StorageService.loadPageLayoutMode();
     _rememberLastPage = await StorageService.loadRememberLastPage();
+    _nightMode = await StorageService.loadNightMode();
     _loaded = true;
     // TEMPORARY DEBUG: verify hydration from SharedPreferences at startup.
-    debugPrint('[Settings] loadSettings ← disk: pageLayoutMode="$_pageLayoutMode", '
-        'rememberLastPage=$_rememberLastPage');
+    debugPrint(
+      '[Settings] loadSettings ← disk: pageLayoutMode="$_pageLayoutMode", '
+      'rememberLastPage=$_rememberLastPage, nightMode=$_nightMode',
+    );
     notifyListeners();
   }
 
@@ -47,14 +58,18 @@ class SettingsProvider extends ChangeNotifier {
     if (mode != 'single' && mode != 'continuous') return;
     if (mode == _pageLayoutMode) {
       // TEMPORARY DEBUG: tapped value equals current value — nothing to save.
-      debugPrint('[Settings] setPageLayoutMode("$mode") → no change, skipping save');
+      debugPrint(
+        '[Settings] setPageLayoutMode("$mode") → no change, skipping save',
+      );
       return;
     }
 
     _pageLayoutMode = mode;
     // TEMPORARY DEBUG: verify the tap reaches persistence.
-    debugPrint('[Settings] setPageLayoutMode("$mode") → saving to '
-        'SharedPreferences key "default_page_layout"');
+    debugPrint(
+      '[Settings] setPageLayoutMode("$mode") → saving to '
+      'SharedPreferences key "default_page_layout"',
+    );
     await StorageService.savePageLayoutMode(mode);
     notifyListeners();
   }
@@ -64,15 +79,33 @@ class SettingsProvider extends ChangeNotifier {
   Future<void> setRememberLastPage(bool value) async {
     if (value == _rememberLastPage) {
       // TEMPORARY DEBUG: toggled value equals current value — nothing to save.
-      debugPrint('[Settings] setRememberLastPage($value) → no change, skipping save');
+      debugPrint(
+        '[Settings] setRememberLastPage($value) → no change, skipping save',
+      );
       return;
     }
 
     _rememberLastPage = value;
     // TEMPORARY DEBUG: verify the toggle reaches persistence.
-    debugPrint('[Settings] setRememberLastPage($value) → saving to '
-        'SharedPreferences key "remember_last_page"');
+    debugPrint(
+      '[Settings] setRememberLastPage($value) → saving to '
+      'SharedPreferences key "remember_last_page"',
+    );
     await StorageService.saveRememberLastPage(value);
+    notifyListeners();
+  }
+
+  /// Toggle the viewer's night mode (inverted PDF page colors) and persist.
+  ///
+  /// Unlike the page-layout/remember-page settings (snapshotted once when a
+  /// viewer opens), night mode is applied to the *currently open* viewer
+  /// immediately — it is a session reading preference, not a file default.
+  Future<void> toggleNightMode() async {
+    _nightMode = !_nightMode;
+    debugPrint(
+      '[Settings] toggleNightMode → night_mode=${_nightMode ? 'ON' : 'OFF'}',
+    );
+    await StorageService.saveNightMode(_nightMode);
     notifyListeners();
   }
 }

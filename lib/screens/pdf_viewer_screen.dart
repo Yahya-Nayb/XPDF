@@ -186,10 +186,31 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
 
     // Subscribe to the annotations provider so highlight changes for this
     // file refresh the page overlays without rebuilding the whole screen.
-    // The snapshot is required lazy here (the home screen hydrates it at
-    // startup; deep-link entries hydrate on first open instead).
+    // The provider (annotations_provider.dart) is the SINGLE source of truth:
+    // it is hydrated once at app startup (home_screen calls loadAll()), so its
+    // notifyListeners() for RESTORED annotations fires BEFORE this screen
+    // subscribes. Relying on the listener alone leaves _annotationsForFile
+    // empty for saved highlights — the annotations panel (reads the provider
+    // directly) shows them but the page-overlay builder draws nothing. We
+    // therefore mirror the provider's list into our snapshot immediately at
+    // subscribe time; the listener below keeps it fresh for live edits.
     _annotationsProvider = context.read<AnnotationsProvider>()
       ..addListener(_onAnnotationsChanged);
+    _annotationsForFile
+      ..clear()
+      ..addAll(
+        _annotationsProvider?.annotationsForFile(widget.file.path) ?? const [],
+      );
+    // TEMPORARY DEBUG: confirm the restored annotations actually reach the
+    // overlay snapshot right at open (previously they never did).
+    debugPrint(
+      '[Annotations] viewer "${widget.file.name}" opened: '
+      '${_annotationsForFile.length} annotation(s) in snapshot '
+      '(source: provider${_annotationsProvider?.isLoaded == true ? ' already loaded' : ', hydration in flight'})',
+    );
+    // Ensure hydration even on a cold/direct open. Once loaded this is a
+    // no-op; if the load is still in flight its notifyListeners() will also
+    // refresh us via _onAnnotationsChanged (setState + mounted-guarded).
     _annotationsProvider?.loadAnnotations(widget.file.path);
 
     // TEMPORARY DEBUG: 1-second aggregated perf sampler (see counters above).
@@ -328,12 +349,34 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     // on-screen page rect via pdfrx's own coordinate helpers.
     _pageOverlays =
         (BuildContext context, Rect pageRectInViewer, PdfPage page) {
+          // Night mode: only the PAGE pixels are night-rendered (the whole
+          // viewer is wrapped in the soft warm-desaturated inversion filter).
+          // Our overlay widgets are pre-compensated with that filter's exact
+          // affine INVERSE below, so highlights net back to their authored
+          // color instead of being darkened along with the page.
+          final bool night = context.read<SettingsProvider>().isNightMode;
+          // Slightly stronger band at night so highlights stay clearly
+          // distinguishable against the now-dark pages.
+          final double highlightAlpha = night ? 0.5 : 0.42;
           final List<PdfAnnotation> anns = _annotationsForFile
               .where((a) => a.pageNumber == page.pageNumber)
               .toList();
+          // TEMPORARY DEBUG: proves the overlay layer actually sees the loaded
+          // annotations per page (restored highlights previously never reached
+          // this snapshot, so this printed 0).
+          if (anns.isNotEmpty) {
+            final int rects = anns.fold(0, (sum, a) => sum + a.rects.length);
+            debugPrint(
+              '[Overlay] page ${page.pageNumber}: drawing '
+              '${anns.length} annotation(s), $rects rect(s) '
+              '(snapshot has ${_annotationsForFile.length} total for file)',
+            );
+          }
           final List<Widget> widgets = <Widget>[];
           for (final PdfAnnotation annotation in anns) {
-            final Color color = annotation.color.withValues(alpha: 0.42);
+            final Color color = annotation.color.withValues(
+              alpha: highlightAlpha,
+            );
             for (var i = 0; i < annotation.rects.length; i++) {
               final AnnotationRect r = annotation.rects[i];
               final Rect rect = PdfRect(
@@ -343,6 +386,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
                 r.y - r.height,
               ).toRect(page: page, scaledPageSize: pageRectInViewer.size);
               if (rect.isEmpty) continue;
+              final Widget highlight = ColoredBox(color: color);
               widgets.add(
                 Positioned.fromRect(
                   key: ObjectKey('${annotation.id}:$i'),
@@ -352,7 +396,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
                       _showAnnotationActions(annotation.id);
                       return true;
                     },
-                    child: ColoredBox(color: color),
+                    child: night ? NightMode.counterWrap(highlight) : highlight,
                   ),
                 ),
               );
@@ -372,7 +416,11 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
             );
             if (!endRectInPage.isEmpty) {
               widgets.add(
-                _buildSelectionToolbar(endRectInPage, pageRectInViewer.size),
+                _buildSelectionToolbar(
+                  endRectInPage,
+                  pageRectInViewer.size,
+                  nightMode: night,
+                ),
               );
             }
           }
@@ -624,7 +672,11 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   /// clamped inside the page's overlay bounds (the overlays are laid out in
   /// page-local space and clipped to the page, so staying in-bounds keeps it
   /// fully visible). If there isn't room below the selection it flips above.
-  Widget _buildSelectionToolbar(Rect endRectInPage, Size pageSize) {
+  Widget _buildSelectionToolbar(
+    Rect endRectInPage,
+    Size pageSize, {
+    bool nightMode = false,
+  }) {
     const double toolbarW = 224;
     const double toolbarH = 44;
     const double pad = 6;
@@ -662,9 +714,18 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
       // annotations work — the image renders, taps pass through and land on
       // the registered PdfOverlayInteractionRegion bounds.
       child: IgnorePointer(
-        child: _SelectionToolbar(
-          onHighlight: _showHighlightCreationSheetForToolbar,
-        ),
+        // Pre-compensate with the exact inverse of the night filter so the
+        // toolbar keeps its authored colors while the page (and everything
+        // else) is night-rendered around it.
+        child: nightMode
+            ? NightMode.counterWrap(
+                _SelectionToolbar(
+                  onHighlight: _showHighlightCreationSheetForToolbar,
+                ),
+              )
+            : _SelectionToolbar(
+                onHighlight: _showHighlightCreationSheetForToolbar,
+              ),
       ),
     );
   }
@@ -714,11 +775,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     final double current = _zoomNotifier.value;
     final double next = (current + 0.25).clamp(_minZoom, _maxZoom);
     if (next != current) {
-      _controller.setZoom(
-        Offset(_controller.viewSize.width / 2, _controller.viewSize.height / 2),
-        next,
-      );
-      // _onControllerUpdate → _zoomNotifier.value will fire from the listener.
+      _applyZoom(next);
     }
   }
 
@@ -727,12 +784,46 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     final double current = _zoomNotifier.value;
     final double next = (current - 0.25).clamp(_minZoom, _maxZoom);
     if (next != current) {
-      _controller.setZoom(
-        Offset(_controller.viewSize.width / 2, _controller.viewSize.height / 2),
-        next,
-      );
-      // _onControllerUpdate → _zoomNotifier.value will fire from the listener.
+      _applyZoom(next);
     }
+  }
+
+  /// Applies a new zoom level while keeping the DOCUMENT POINT currently at the
+  /// center of the view unmoved, so the current page and scroll position are
+  /// preserved and only the zoom changes.
+  ///
+  /// IMPORTANT: [PdfViewerController.setZoom]'s `position` argument is a
+  /// DOCUMENT coordinate, not a view coordinate. Passing the view center
+  /// (`viewW/2, viewH/2`) as that argument made pdfrx re-center the document
+  /// at that point — for any multi-page document that point sits near the top,
+  /// so the view snapped back to page 1. [zoomOnLocalPosition] interprets its
+  /// argument in LOCAL (view) coordinates and internally converts it to the
+  /// document point under it, which is the semantics we actually want here.
+  void _applyZoom(double next) {
+    // TEMPORARY DEBUG: log the controller's live page immediately before and
+    // after the zoom settles, to confirm the page number no longer changes.
+    debugPrint(
+      '[Zoom] before page=${_controller.pageNumber} '
+      'zoom=${_controller.currentZoom.toStringAsFixed(2)}',
+    );
+    final Offset viewCenter = Offset(
+      _controller.viewSize.width / 2,
+      _controller.viewSize.height / 2,
+    );
+    _controller
+        .zoomOnLocalPosition(localPosition: viewCenter, newZoom: next)
+        .then((_) {
+          // Log once the 200ms zoom animation completes + the next frame applies.
+          if (!mounted) return;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            debugPrint(
+              '[Zoom] after  page=${_controller.pageNumber} '
+              'zoom=${_controller.currentZoom.toStringAsFixed(2)}',
+            );
+          });
+        });
+    // _onControllerUpdate → _zoomNotifier.value will fire from the listener.
   }
 
   // =========================================================================
@@ -1312,46 +1403,182 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   @override
   Widget build(BuildContext context) {
     _perfBuilds++; // TEMPORARY DEBUG: counts every rebuild of this screen
+    // Watch night mode so toggling immediately re-wraps the page canvas in the
+    // night filter (and re-runs the page overlays via the rebuild below).
+    final bool nightMode = context.watch<SettingsProvider>().isNightMode;
     return Scaffold(
       backgroundColor: AppColors.colorOf(context, 'background'),
       appBar: AppBar(
         backgroundColor: AppColors.colorOf(context, 'surface'),
         surfaceTintColor: Colors.transparent,
-        title: Text(
-          widget.file.name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w600,
-            color: AppColors.colorOf(context, 'textPrimary'),
+        elevation: 0,
+        centerTitle: false,
+        titleSpacing: MediaQuery.sizeOf(context).width < 420 ? 0 : 16,
+        title: _buildTopBar(context, nightMode: nightMode),
+      ),
+
+      body: Column(
+        children: [
+          // -- Search bar (only visible when _searchActive is true) --
+          if (_searchActive) _buildSearchBar(),
+
+          // -- PDF viewer (fills remaining space) --
+          Expanded(
+            child: RepaintBoundary(
+              // Night mode wraps ALL page rendering in the soft warm
+              // night filter (pages + pdfrx selection/search highlights).
+              // Our own overlays are individually pre-compensated with the
+              // filter's inverse in the page-overlays builder so annotation
+              // colors survive unchanged.
+              child: nightMode
+                  ? NightMode.wrap(
+                      PdfViewer.file(
+                        widget.file.path,
+                        key: ValueKey(widget.file.path),
+                        controller: _controller,
+                        initialPageNumber: _currentPage,
+                        params: PdfViewerParams(
+                          textSelectionParams: _textSelectionParams,
+                          buildContextMenu: _buildSelectionContextMenu,
+                          pageOverlaysBuilder: _pageOverlays,
+                          margin: 0,
+                          pageDropShadow: null,
+                          layoutPages: _useSinglePageLayout
+                              ? _pagedLayout
+                              : null,
+                          onViewSizeChanged: _onViewSizeChanged,
+                          pagePaintCallbacks: [
+                            if (_textSearcher != null)
+                              _textSearcher!.pageTextMatchPaintCallback,
+                          ],
+                          onPageChanged: _onPageChanged,
+                          onDocumentLoadFinished: _onDocLoadFinished,
+                          onViewerReady: _onViewerReady,
+                        ),
+                      ),
+                    )
+                  : PdfViewer.file(
+                      widget.file.path,
+                      key: ValueKey(widget.file.path),
+                      controller: _controller,
+                      initialPageNumber: _currentPage,
+                      params: PdfViewerParams(
+                        textSelectionParams: _textSelectionParams,
+                        buildContextMenu: _buildSelectionContextMenu,
+                        pageOverlaysBuilder: _pageOverlays,
+                        margin: 0,
+                        pageDropShadow: null,
+                        layoutPages: _useSinglePageLayout ? _pagedLayout : null,
+                        onViewSizeChanged: _onViewSizeChanged,
+                        pagePaintCallbacks: [
+                          if (_textSearcher != null)
+                            _textSearcher!.pageTextMatchPaintCallback,
+                        ],
+                        onPageChanged: _onPageChanged,
+                        onDocumentLoadFinished: _onDocLoadFinished,
+                        onViewerReady: _onViewerReady,
+                      ),
+                    ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // =========================================================================
+  // Responsive top toolbar
+  // =========================================================================
+
+  /// Toggle the viewer's night mode. The provider persists it and notifies;
+  /// our `build()` re-wraps the page canvas via `context.watch` on the same
+  /// provider, so the night mode applies to the currently open file instantly.
+  Future<void> _toggleNightMode() async {
+    await context.read<SettingsProvider>().toggleNightMode();
+  }
+
+  /// Responsive top toolbar. The filename (`Expanded` + ellipsis) absorbs the
+  /// leftover width, so trailing controls never get squeezed out — instead
+  /// they tier down on narrow screens before anything collides or overflows:
+  ///
+  ///   ≥500 : search · night · zoom− · NN% · zoom+ · share · [N/N] · ⋮
+  ///   420–499: same, minus Share (moved into the ⋮ menu)
+  ///   <420 : minus Share and the zoom-% label (shown inert in the ⋮ menu);
+  ///          icons drop to 40×48 glyph hits with 20px icons, the page badge
+  ///          pad/font shrink; the back button and filename stay as-is.
+  ///
+  /// Every control keeps at least a 40×48dp touch target (48×48 on regular
+  /// widths). "999 / 1000"-style badges fit by construction at every tier
+  /// because the indicator is a compact pill with its own padding.
+  Widget _buildTopBar(BuildContext context, {required bool nightMode}) {
+    final double width = MediaQuery.sizeOf(context).width;
+    final bool compact = width < 420;
+    final bool hideShare = width < 500;
+
+    final Color iconColor = AppColors.colorOf(context, 'textSecondary');
+    final Color accentColor = AppColors.colorOf(context, 'primary');
+    final double iconSize = compact ? 20 : 22;
+    final BoxConstraints tapConstraints = compact
+        ? const BoxConstraints(minWidth: 40, minHeight: 48)
+        : const BoxConstraints(minWidth: 48, minHeight: 48);
+
+    // Standard icon button with a consistent (≥40×48) touch target.
+    Widget iconButton(IconData icon, VoidCallback? onPressed, String tooltip) {
+      return IconButton(
+        icon: Icon(icon, size: iconSize, color: iconColor),
+        onPressed: onPressed,
+        tooltip: tooltip,
+        padding: EdgeInsets.zero,
+        constraints: tapConstraints,
+      );
+    }
+
+    return Row(
+      children: [
+        // Filename takes ALL leftover width so controls never overflow —
+        // it ellipsizes first, long before the row can collide.
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: Text(
+              widget.file.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: AppColors.colorOf(context, 'textPrimary'),
+              ),
+            ),
           ),
         ),
-        elevation: 0,
-        actions: [
-          // -- Search icon --
-          IconButton(
-            icon: Icon(
-              _searchActive ? Icons.close : Icons.search,
-              color: AppColors.colorOf(context, 'textSecondary'),
-              size: 22,
-            ),
-            onPressed: _searchActive ? _closeSearch : _openSearch,
-            tooltip: 'Search',
-          ),
 
-          // -- Zoom out --
-          IconButton(
-            icon: Icon(
-              Icons.remove_circle_outline,
-              color: AppColors.colorOf(context, 'textSecondary'),
-              size: 22,
-            ),
-            onPressed: _zoomOut,
-            tooltip: 'Zoom out',
+        // -- Night Mode quick toggle (always visible) --
+        IconButton(
+          icon: Icon(
+            nightMode ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
+            size: iconSize,
+            color: nightMode ? accentColor : iconColor,
           ),
+          onPressed: _toggleNightMode,
+          tooltip: nightMode ? 'Turn off night mode' : 'Turn on night mode',
+          padding: EdgeInsets.zero,
+          constraints: tapConstraints,
+        ),
 
-          // -- Zoom level label (only this widget rebuilds on zoom change) --
+        // -- Search --
+        iconButton(
+          _searchActive ? Icons.close : Icons.search,
+          _searchActive ? _closeSearch : _openSearch,
+          'Search',
+        ),
+
+        // -- Zoom out --
+        iconButton(Icons.remove_circle_outline, _zoomOut, 'Zoom out'),
+
+        // -- Zoom level label (only this widget rebuilds on zoom change).
+        //    Hidden on very narrow screens (see compaction rules above). --
+        if (!compact)
           ValueListenableBuilder<double>(
             valueListenable: _zoomNotifier,
             builder: (context, zoom, _) {
@@ -1371,80 +1598,100 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
             },
           ),
 
-          // -- Zoom in --
-          IconButton(
-            icon: Icon(
-              Icons.add_circle_outline,
-              color: AppColors.colorOf(context, 'textSecondary'),
-              size: 22,
-            ),
-            onPressed: _zoomIn,
-            tooltip: 'Zoom in',
-          ),
+        // -- Zoom in --
+        iconButton(Icons.add_circle_outline, _zoomIn, 'Zoom in'),
 
-          // -- Share --
-          IconButton(
-            icon: Icon(
-              Icons.share_outlined,
-              color: AppColors.colorOf(context, 'textSecondary'),
-              size: 22,
-            ),
-            onPressed: _shareFile,
-            tooltip: 'Share file',
-          ),
+        // -- Share (moved to the ⋮ menu on narrow screens) --
+        if (!hideShare)
+          iconButton(Icons.share_outlined, _shareFile, 'Share file'),
 
-          // -- Page indicator badge --
-          Center(
-            child: Container(
-              margin: const EdgeInsets.only(right: 4),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: AppColors.colorOf(context, 'inputFill'),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(
-                _totalPages > 0
-                    ? '$_currentPage / $_totalPages'
-                    : '$_currentPage',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.colorOf(context, 'textSecondary'),
-                ),
+        // -- Page indicator badge --
+        Center(
+          child: Container(
+            margin: const EdgeInsets.only(right: 4),
+            padding: EdgeInsets.symmetric(
+              horizontal: compact ? 7 : 10,
+              vertical: 4,
+            ),
+            decoration: BoxDecoration(
+              color: AppColors.colorOf(context, 'inputFill'),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              _totalPages > 0
+                  ? '$_currentPage / $_totalPages'
+                  : '$_currentPage',
+              style: TextStyle(
+                fontSize: compact ? 11 : 12,
+                fontWeight: FontWeight.w600,
+                color: AppColors.colorOf(context, 'textSecondary'),
               ),
             ),
           ),
+        ),
 
-          // -- Overflow menu: jump-to-page & bookmarks --
-          PopupMenuButton<String>(
-            icon: Icon(
-              Icons.more_vert,
-              color: AppColors.colorOf(context, 'textSecondary'),
-              size: 22,
-            ),
-            color: AppColors.colorOf(context, 'surface'),
-            onSelected: (String value) {
-              if (value == 'jump') {
+        // -- Overflow menu: dynamic entries + jump-to-page & bookmarks --
+        PopupMenuButton<String>(
+          icon: Icon(Icons.more_vert, size: iconSize, color: iconColor),
+          color: AppColors.colorOf(context, 'surface'),
+          padding: EdgeInsets.zero,
+          constraints: tapConstraints,
+          tooltip: 'More options',
+          onSelected: (String value) {
+            switch (value) {
+              case 'search':
+                if (_searchActive) {
+                  _closeSearch();
+                } else {
+                  _openSearch();
+                }
+              case 'share':
+                _shareFile();
+              case 'jump':
                 _showJumpToPageDialog();
-              } else if (value == 'bookmarks') {
+              case 'bookmarks':
                 _showBookmarksPanel();
-              } else if (value == 'annotations') {
+              case 'annotations':
                 _showAnnotationsPanel();
-              }
-            },
-            itemBuilder: (BuildContext ctx) => <PopupMenuEntry<String>>[
+            }
+          },
+          itemBuilder: (BuildContext ctx) => <PopupMenuEntry<String>>[
+            // Live zoom readout shown only when the bar dropped the label.
+            if (compact)
               PopupMenuItem<String>(
-                value: 'jump',
+                value: 'zoom-readout',
+                enabled: false,
                 child: Row(
                   children: [
                     Icon(
-                      Icons.numbers,
+                      Icons.zoom_out_map,
+                      size: 20,
+                      color: AppColors.colorOf(context, 'textMuted'),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      'Zoom: ${(_zoomNotifier.value * 100).round()}%',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: AppColors.colorOf(context, 'textMuted'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            if (hideShare)
+              PopupMenuItem<String>(
+                value: 'share',
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.share_outlined,
                       size: 20,
                       color: AppColors.colorOf(context, 'textSecondary'),
                     ),
                     const SizedBox(width: 12),
                     Text(
-                      'Jump to page',
+                      'Share file',
                       style: TextStyle(
                         fontSize: 14,
                         color: AppColors.colorOf(context, 'textPrimary'),
@@ -1453,85 +1700,69 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
                   ],
                 ),
               ),
-              PopupMenuItem<String>(
-                value: 'bookmarks',
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.bookmark_outline,
-                      size: 20,
-                      color: AppColors.colorOf(context, 'textSecondary'),
+            PopupMenuItem<String>(
+              value: 'jump',
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.numbers,
+                    size: 20,
+                    color: AppColors.colorOf(context, 'textSecondary'),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Jump to page',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: AppColors.colorOf(context, 'textPrimary'),
                     ),
-                    const SizedBox(width: 12),
-                    Text(
-                      'Bookmarks',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: AppColors.colorOf(context, 'textPrimary'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              PopupMenuItem<String>(
-                value: 'annotations',
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.highlight_alt,
-                      size: 20,
-                      color: AppColors.colorOf(context, 'textSecondary'),
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      'Annotations',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: AppColors.colorOf(context, 'textPrimary'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-
-      body: Column(
-        children: [
-          // -- Search bar (only visible when _searchActive is true) --
-          if (_searchActive) _buildSearchBar(),
-
-          // -- PDF viewer (fills remaining space) --
-          Expanded(
-            child: RepaintBoundary(
-              child: PdfViewer.file(
-                widget.file.path,
-                key: ValueKey(widget.file.path),
-                controller: _controller,
-                initialPageNumber: _currentPage,
-                params: PdfViewerParams(
-                  textSelectionParams: _textSelectionParams,
-                  buildContextMenu: _buildSelectionContextMenu,
-                  pageOverlaysBuilder: _pageOverlays,
-                  margin: 0,
-                  pageDropShadow: null,
-                  layoutPages: _useSinglePageLayout ? _pagedLayout : null,
-                  onViewSizeChanged: _onViewSizeChanged,
-                  pagePaintCallbacks: [
-                    if (_textSearcher != null)
-                      _textSearcher!.pageTextMatchPaintCallback,
-                  ],
-                  onPageChanged: _onPageChanged,
-                  onDocumentLoadFinished: _onDocLoadFinished,
-                  onViewerReady: _onViewerReady,
-                ),
+                  ),
+                ],
               ),
             ),
-          ),
-        ],
-      ),
+            PopupMenuItem<String>(
+              value: 'bookmarks',
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.bookmark_outline,
+                    size: 20,
+                    color: AppColors.colorOf(context, 'textSecondary'),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Bookmarks',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: AppColors.colorOf(context, 'textPrimary'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            PopupMenuItem<String>(
+              value: 'annotations',
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.highlight_alt,
+                    size: 20,
+                    color: AppColors.colorOf(context, 'textSecondary'),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Annotations',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: AppColors.colorOf(context, 'textPrimary'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 
