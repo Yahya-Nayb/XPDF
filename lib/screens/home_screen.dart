@@ -1,18 +1,20 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 
-import '../colors.dart';
 import '../models/recent_file.dart';
 import '../providers/annotations_provider.dart';
+import '../providers/bookmarks_provider.dart';
 import '../providers/folders_provider.dart';
 import '../providers/recent_files_provider.dart';
-import '../providers/settings_provider.dart';
-import '../services/file_service.dart';
 import '../providers/theme_provider.dart';
-import '../widgets/folia_search_bar.dart';
-import '../widgets/import_section.dart';
-import '../widgets/recent_file_card.dart';
+import '../services/storage_service.dart';
+import '../theme/app_colors.dart';
+import '../theme/brand_gradient.dart';
+import '../widgets/xpdf_search_bar.dart';
+import '../widgets/pdf_grid_card.dart';
+import '../widgets/recent_file_list_row.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/empty_favorites_state.dart';
 import '../widgets/no_search_results.dart';
@@ -21,16 +23,34 @@ import '../widgets/sort_sheet.dart';
 import '../widgets/url_import_dialog.dart';
 import 'library_screen.dart';
 import 'image_to_pdf_screen.dart';
+import 'merge_pdf_screen.dart';
+import 'split_pdf_screen.dart';
+import 'onboarding_screen.dart';
 import 'pdf_viewer_screen.dart';
 import 'settings_screen.dart';
+import '../services/file_service.dart';
 
-/// The app's home screen — search bar, import shortcuts, and recent files.
+/// Display layouts for the Recent-files list.
 ///
-/// The search query lives here as local StatefulWidget state (not in the
-/// provider) because it's purely a UI filter — it doesn't affect what's
-/// stored on disk or shared with other screens.
+/// Stored in SharedPreferences as the enum's lowercase name ("grid" | "list")
+/// under the "recent_view_mode" key; Grid is the default.
+enum RecentViewMode { grid, list }
+
+/// Material's regular FAB diameter. Also the width of the scroll clearance
+/// added at the end of the recents so the FAB never covers the last file.
+const double _addFabSize = 56;
+
+/// Bottom padding appended to the recents list. The FAB floats 16dp above the
+/// bottom navigation bar (Scaffold's own margin), so the list needs to clear
+/// 16 + [_addFabSize] for the button plus a further 16dp so the final row
+/// settles fully above it rather than flush against it.
+const double _addFabClearance = 16 + _addFabSize + 16;
+
+/// The app's home screen — action cards, quick tools, and recent files grid.
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final bool showOnboarding;
+
+  const HomeScreen({super.key, this.showOnboarding = false});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -39,12 +59,12 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final _searchController = TextEditingController();
   String _searchQuery = '';
-  int _currentNavIndex = 0; // 0 = Home, 1 = Favorites, 2 = Library, 3 = Settings
+  int _currentNavIndex = 0;
+  bool _searchVisible = false;
+  bool _showAllRecents = false;
 
-  // PERFORMANCE: Cache sorted/filtered file lists to avoid recomputing
-  // sortFiles() + _filteredFiles() on every build. The cache is invalidated
-  // when the provider's version counter bumps (any data or sort-mode change)
-  // or when the search query changes.
+  RecentViewMode _viewMode = RecentViewMode.grid;
+
   List<RecentFile>? _cachedSortedAll;
   List<RecentFile>? _cachedSortedFavorites;
   int _cachedVersion = -1;
@@ -54,14 +74,28 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    // Load saved files from disk on first build.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final savedMode = await StorageService.loadRecentViewMode();
+      if (!mounted) return;
+
+      setState(
+        () => _viewMode = RecentViewMode.values.firstWhere(
+          (m) => m.name == savedMode,
+          orElse: () => RecentViewMode.grid,
+        ),
+      );
+
       context.read<RecentFilesProvider>().loadFiles();
       context.read<FoldersProvider>().loadFolders();
-      context.read<SettingsProvider>().loadSettings();
-      // Hydrate saved highlight annotations too, so opening a viewer never
-      // has to wait for a lazy read.
       context.read<AnnotationsProvider>().loadAll();
+      context.read<BookmarksProvider>().loadAll();
+
+      if (widget.showOnboarding) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const OnboardingScreen()),
+        );
+      }
     });
   }
 
@@ -72,10 +106,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // Actions
+  // Actions (logic unchanged)
   // ---------------------------------------------------------------------------
 
-  /// Pick a PDF from the device filesystem and open it in the viewer.
   Future<void> _pickFile() async {
     final provider = context.read<RecentFilesProvider>();
     final file = await provider.pickAndOpenPdf();
@@ -87,7 +120,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Navigate to the viewer for an existing recent file.
   void _openFile(RecentFile file) {
     Navigator.push(
       context,
@@ -95,16 +127,20 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Download a PDF from a pasted URL and open it in the viewer.
+  Future<void> _setViewMode(RecentViewMode mode) async {
+    setState(() => _viewMode = mode);
+    await StorageService.saveRecentViewMode(mode.name);
+  }
+
   Future<void> _importFromUrl() async {
     final downloaded = await showUrlImportDialog(context);
     if (downloaded == null || !mounted) return;
 
     final recent = await context.read<RecentFilesProvider>().addLocalFile(
-          path: downloaded.path,
-          name: downloaded.name,
-          size: downloaded.size,
-        );
+      path: downloaded.path,
+      name: downloaded.name,
+      size: downloaded.size,
+    );
 
     if (mounted) {
       Navigator.push(
@@ -114,18 +150,16 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Scan documents with the camera, save them as one PDF and open it in
-  /// the viewer. Silent on user cancellation; SnackBar feedback on errors.
   Future<void> _scanDocument() async {
     try {
       final scanned = await FileService.scanDocumentsToPdf();
-      if (scanned == null || !mounted) return; // cancelled mid-scan
+      if (scanned == null || !mounted) return;
 
       final recent = await context.read<RecentFilesProvider>().addLocalFile(
-            path: scanned.path,
-            name: scanned.name,
-            size: scanned.size,
-          );
+        path: scanned.path,
+        name: scanned.name,
+        size: scanned.size,
+      );
 
       if (!mounted) return;
       Navigator.push(
@@ -133,14 +167,15 @@ class _HomeScreenState extends State<HomeScreen> {
         MaterialPageRoute(builder: (_) => PdfViewerScreen(file: recent)),
       );
     } on ScanException catch (e) {
-      // Permission denied, scanner failure, or save failure.
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(e.message),
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 3),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
         ),
       );
     } catch (_) {
@@ -150,13 +185,14 @@ class _HomeScreenState extends State<HomeScreen> {
           content: const Text('Scan failed. Please try again.'),
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 3),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
         ),
       );
     }
   }
 
-  /// Navigate to the Images-to-PDF conversion screen.
   void _openImageToPdf() {
     Navigator.push(
       context,
@@ -164,87 +200,20 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Shows the Tools bottom sheet with tappable tool cards.
-  void _showToolsSheet() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetContext) {
-        return DraggableScrollableSheet(
-          initialChildSize: 0.35,
-          minChildSize: 0.2,
-          maxChildSize: 0.6,
-          expand: false,
-          builder: (sheetContext, scrollController) {
-            return Column(
-              children: [
-                // Drag handle
-                Container(
-                  margin: const EdgeInsets.only(top: 10),
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: AppColors.colorOf(sheetContext, 'textMuted')
-                        .withValues(alpha: 0.3),
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-
-                // Title
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      'Tools',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
-                        color:
-                            AppColors.colorOf(sheetContext, 'textPrimary'),
-                      ),
-                    ),
-                  ),
-                ),
-
-                // Tool cards
-                Expanded(
-                  child: ListView(
-                    controller: scrollController,
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    children: [
-                      ToolCard(
-                        icon: Icons.image_rounded,
-                        iconBackground: AppColors.colorOf(
-                          sheetContext,
-                          'inputFill',
-                        ),
-                        iconColor: AppColors.colorOf(
-                          sheetContext,
-                          'primary',
-                        ),
-                        title: 'Images to PDF',
-                        subtitle: 'Combine photos into one PDF file',
-                        onTap: () {
-                          Navigator.pop(sheetContext);
-                          _openImageToPdf();
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            );
-          },
-        );
-      },
+  void _openMergePdf() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const MergePdfScreen()),
     );
   }
 
-  /// Placeholder for coming-soon import sources.
+  void _openSplitPdf() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const SplitPdfScreen()),
+    );
+  }
+
   void _comingSoon(String source) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -256,10 +225,136 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Handle menu actions from the three-dot popup on a recent file card.
+  void _showImportSheet() {
+    final colors = AppColors.schemeOf(context);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: colors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: colors.border,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Import document',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: colors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _ImportOptionRow(
+                  icon: Icons.folder_open_rounded,
+                  title: 'Files',
+                  subtitle: 'Pick a PDF from your device',
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    _pickFile();
+                  },
+                ),
+                _ImportOptionRow(
+                  icon: Icons.cloud_rounded,
+                  title: 'Drive',
+                  subtitle: 'Import from Google Drive',
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    _comingSoon('Google Drive');
+                  },
+                ),
+                _ImportOptionRow(
+                  icon: Icons.link_rounded,
+                  title: 'URL',
+                  subtitle: 'Download a PDF from a link',
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    _importFromUrl();
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showFileActions(RecentFile file) {
+    final colors = AppColors.schemeOf(context);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: colors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(
+                file.isFavorite
+                    ? Icons.star_rounded
+                    : Icons.star_border_rounded,
+                color: file.isFavorite
+                    ? const Color(0xFFF6B93B)
+                    : colors.textSecondary,
+              ),
+              title: Text(
+                file.isFavorite ? 'Remove from Favorites' : 'Add to Favorites',
+              ),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                context.read<RecentFilesProvider>().toggleFavorite(file.path);
+              },
+            ),
+            ListTile(
+              leading: Icon(
+                Icons.drive_file_move_outline,
+                color: colors.textSecondary,
+              ),
+              title: const Text('Move to folder'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                showMoveToFolderSheet(context, file);
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.delete_outline, color: colors.accent),
+              title: Text(
+                'Remove from recent',
+                style: TextStyle(color: colors.accent),
+              ),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _onMenuAction('remove', file);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _onMenuAction(String action, RecentFile file) {
     if (action == 'favorite') {
-      // Instant toggle — no confirmation needed, unlike removal.
       context.read<RecentFilesProvider>().toggleFavorite(file.path);
     } else if (action == 'remove') {
       context.read<RecentFilesProvider>().removeFile(file.path);
@@ -276,7 +371,6 @@ class _HomeScreenState extends State<HomeScreen> {
     } else if (action == 'move') {
       showMoveToFolderSheet(context, file);
     }
-    // Future: handle 'rename', 'share', etc.
   }
 
   // ---------------------------------------------------------------------------
@@ -285,167 +379,87 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = AppColors.schemeOf(context);
     final isSettingsView = _currentNavIndex == 3;
+    final isHomeView = _currentNavIndex == 0;
 
-    // PERFORMANCE: The header and floating bar are built OUTSIDE the
-    // RecentFilesProvider Consumer so they never rebuild when files change.
-    // Only the content slivers (below the header) rebuild on provider changes,
-    // using SliverMainAxisGroup to keep them inside a single Consumer.
     return Scaffold(
-      backgroundColor: AppColors.colorOf(context, 'background'),
+      backgroundColor: colors.background,
       body: SafeArea(
-        child: Stack(
+        child: Column(
           children: [
-            CustomScrollView(
-              slivers: [
-                // -- Static header (no provider dependency) ---------------------
-                // The Settings tab renders its own dedicated header.
-                if (!isSettingsView)
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 24, 20, 0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text.rich(
-                                TextSpan(
-                                  style: GoogleFonts.orbitron(
-                                    fontSize: 40,
-                                    fontWeight: FontWeight.w800,
-                                    letterSpacing: -0.5,
-                                  ),
-                                  children: [
-                                    TextSpan(
-                                      text: 'X',
-                                      style: TextStyle(
-                                        color: AppColors.colorOf(
-                                          context,
-                                          'textPrimary',
-                                        ),
-                                      ),
-                                    ),
-                                    TextSpan(
-                                      text: 'PDF',
-                                      style: const TextStyle(
-                                        color: AppColors.brandRed,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.visible,
-                              ),
-                              Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    onPressed: _showToolsSheet,
-                                    icon: Icon(
-                                      Icons.grid_view_outlined,
-                                      color: AppColors.colorOf(
-                                        context,
-                                        'textSecondary',
-                                      ),
-                                      size: 26,
-                                    ),
-                                  ),
-                                  Consumer<ThemeProvider>(
-                                    builder: (context, themeProvider, _) {
-                                      return IconButton(
-                                        onPressed: themeProvider.toggleTheme,
-                                        icon: Icon(
-                                          themeProvider.isDark
-                                              ? Icons.light_mode_rounded
-                                              : Icons.dark_mode_rounded,
-                                          color: AppColors.colorOf(
-                                            context,
-                                            'textSecondary',
-                                          ),
-                                          size: 26,
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Open, read, and manage your PDF files',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w400,
-                              color: AppColors.colorOf(context, 'textMuted'),
-                            ),
-                          ),
-                          const SizedBox(height: 20),
-
-                          // -- Search bar --------------------------------------
-                          FoliaSearchBar(
+            Expanded(
+              child: CustomScrollView(
+                slivers: [
+                  if (!isSettingsView) ...[
+                    SliverToBoxAdapter(child: _buildTopBar(colors)),
+                    if (_searchVisible && !isSettingsView)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                          child: XpdfSearchBar(
                             controller: _searchController,
                             onChanged: (val) =>
                                 setState(() => _searchQuery = val),
                             onClear: () => setState(() => _searchQuery = ''),
                           ),
-
-                          // -- Import section (Home view only) ------------------
-                          if (_currentNavIndex != 0)
-                            const SizedBox(height: 28)
-                          else ...[
-                            const SizedBox(height: 24),
-                            ImportSection(
-                              onFilesTap: _pickFile,
-                              onDriveTap: () => _comingSoon('Google Drive'),
-                              onScanTap: _scanDocument,
-                              onUrlTap: _importFromUrl,
-                            ),
-                            const SizedBox(height: 28),
-                          ],
-                        ],
+                        ),
                       ),
-                    ),
+                    if (isHomeView) ...[
+                      SliverToBoxAdapter(child: _buildActionCards(colors)),
+                      SliverToBoxAdapter(child: _buildQuickTools(colors)),
+                    ],
+                  ],
+                  Consumer<RecentFilesProvider>(
+                    builder: (context, provider, _) {
+                      final showActiveDot = !provider.isDefaultSort;
+                      return SliverMainAxisGroup(
+                        slivers: _buildContentSlivers(
+                          provider,
+                          showActiveDot: showActiveDot,
+                        ),
+                      );
+                    },
                   ),
-
-                // -- Dynamic content (rebuilt only on provider changes) ---------
-                // SliverMainAxisGroup lets a Consumer return multiple slivers.
-                // This is the ONLY part that rebuilds when RecentFilesProvider
-                // changes — the header and floating bar above/below stay still.
-                Consumer<RecentFilesProvider>(
-                  builder: (context, provider, _) {
-                    // PERFORMANCE: showActiveDot is computed HERE inside the
-                    // Consumer builder — a valid build context. It used to be
-                    // read via context.select() inside _buildSortButton(), but
-                    // that method's `this.context` belongs to _HomeScreenState,
-                    // which is NOT building at that point (a descendant
-                    // Consumer<ThemeProvider> is). The Provider package asserts
-                    // debugDoingBuild on the element owning the context, causing
-                    // a runtime error. By computing the value here and threading
-                    // it down, we avoid the illegal context.select() entirely.
-                    final showActiveDot = !provider.isDefaultSort;
-                    return SliverMainAxisGroup(
-                      slivers: _buildContentSlivers(
-                        provider,
-                        showActiveDot: showActiveDot,
-                      ),
-                    );
-                  },
-                ),
-
-                // Bottom spacing so last items aren't hidden behind the floating bar
-                const SliverToBoxAdapter(child: SizedBox(height: 100)),
-              ],
+                  // The FAB floats over the bottom-right of this viewport, so
+                  // the last recent file needs room to scroll clear of it. See
+                  // [_addFabClearance].
+                  const SliverToBoxAdapter(
+                    child: SizedBox(height: _addFabClearance),
+                  ),
+                ],
+              ),
             ),
-
-            // Floating pill bar pinned to the bottom (no provider dependency)
-            Positioned(
-              left: 20,
-              right: 20,
-              bottom: 16,
-              child: _buildFloatingBar(),
+          ],
+        ),
+      ),
+      floatingActionButton: isHomeView ? const _AddDocumentFab() : null,
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          border: Border(top: BorderSide(color: colors.border)),
+        ),
+        child: BottomNavigationBar(
+          currentIndex: _currentNavIndex,
+          onTap: (i) => setState(() {
+            _currentNavIndex = i;
+            if (i != 0) _showAllRecents = false;
+          }),
+          items: const [
+            BottomNavigationBarItem(
+              icon: Icon(Icons.home_rounded),
+              label: 'Home',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.star_rounded),
+              label: 'Favorites',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.folder_rounded),
+              label: 'Library',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.settings_rounded),
+              label: 'Settings',
             ),
           ],
         ),
@@ -453,127 +467,259 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Build the content slivers that depend on RecentFilesProvider.
-  ///
-  /// Extracted from build() so they live inside the narrow Consumer scope
-  /// and don't cause header/floating-bar rebuilds when the file list changes.
+  Widget _buildTopBar(AppColorScheme colors) {
+    final titles = ['XPDF', 'Favorites', 'Library', 'Settings'];
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 12, 12),
+      child: Row(
+        children: [
+          if (_currentNavIndex == 0)
+            // The gradient "XPDF" wordmark replaces the former coral wordmark
+            // image. It is a text widget, so it needs a SizedBox to hold the
+            // header's visual rhythm the way the 30px image did.
+            SizedBox(
+              height: BrandGradient.wordmarkFontSize,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: BrandGradient.text(context),
+              ),
+            )
+          else
+            Text(
+              titles[_currentNavIndex],
+              style: TextStyle(
+                fontSize: 26,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.3,
+                color: colors.textPrimary,
+              ),
+            ),
+          const Spacer(),
+          IconButton(
+            onPressed: () => setState(() => _searchVisible = !_searchVisible),
+            icon: Icon(
+              _searchVisible ? Icons.close_rounded : Icons.search_rounded,
+              color: colors.textSecondary,
+            ),
+          ),
+          Consumer<ThemeProvider>(
+            builder: (context, themeProvider, _) => IconButton(
+              tooltip: themeProvider.isDark
+                  ? 'Switch to light mode'
+                  : 'Switch to dark mode',
+              onPressed: themeProvider.toggleTheme,
+              icon: Icon(
+                themeProvider.isDark
+                    ? Icons.light_mode_outlined
+                    : Icons.dark_mode_outlined,
+                color: colors.textSecondary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionCards(AppColorScheme colors) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+      child: Row(
+        children: [
+          Expanded(
+            child: _ActionCard(
+              icon: Icons.document_scanner_outlined,
+              title: 'Scan',
+              subtitle: 'Camera to PDF',
+              background: colors.surface,
+              foreground: colors.textPrimary,
+              subtitleColor: colors.textSecondary,
+              border: colors.border,
+              onTap: _scanDocument,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _ActionCard(
+              icon: Icons.file_download_outlined,
+              title: 'Import',
+              subtitle: 'Files, URL & more',
+              background: colors.accent,
+              foreground: Colors.white,
+              subtitleColor: Colors.white.withValues(alpha: 0.85),
+              border: colors.accent,
+              onTap: _showImportSheet,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQuickTools(AppColorScheme colors) {
+    final (splitBg, splitFg) = _toolTint(context, 0);
+    final (mergeBg, mergeFg) = _toolTint(context, 1);
+    final (imageBg, imageFg) = _toolTint(context, 2);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: _QuickToolCard(
+              icon: Icons.content_cut_rounded,
+              name: 'Split',
+              subtitle: 'Extract pages',
+              iconBackground: splitBg,
+              iconColor: splitFg,
+              onTap: _openSplitPdf,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _QuickToolCard(
+              icon: Icons.merge_type_rounded,
+              name: 'Merge',
+              subtitle: 'Combine files',
+              iconBackground: mergeBg,
+              iconColor: mergeFg,
+              onTap: _openMergePdf,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _QuickToolCard(
+              icon: Icons.image_rounded,
+              name: 'Images',
+              subtitle: 'To PDF',
+              iconBackground: imageBg,
+              iconColor: imageFg,
+              onTap: _openImageToPdf,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   List<Widget> _buildContentSlivers(
     RecentFilesProvider provider, {
     required bool showActiveDot,
   }) {
-    final isFavoritesView = _currentNavIndex == 1;
-    final isLibraryView = _currentNavIndex == 2;
-    final isSettingsView = _currentNavIndex == 3;
-
-    // -- Loading state -------------------------------------------
     if (!provider.isLoaded) {
       return const [
-        SliverFillRemaining(
-          child: Center(child: CircularProgressIndicator()),
-        ),
+        SliverFillRemaining(child: Center(child: CircularProgressIndicator())),
       ];
     }
 
-    // -- Favorites view ------------------------------------------
-    if (isFavoritesView) {
+    if (_currentNavIndex == 1) {
       if (provider.favoriteFiles.isEmpty && _searchQuery.isEmpty) {
         return const [SliverFillRemaining(child: EmptyFavoritesState())];
       }
       return [
         _buildSectionHeader('Favorites', showActiveDot: showActiveDot),
-        _buildFileList(provider, favoritesOnly: true),
+        _buildFileGrid(provider, favoritesOnly: true),
       ];
     }
 
-    // -- Library view ---------------------------------------------
-    if (isLibraryView) {
+    if (_currentNavIndex == 2) {
       return [
-        SliverToBoxAdapter(
+        const SliverToBoxAdapter(
           child: Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: const LibraryView(),
+            padding: EdgeInsets.only(top: 4),
+            child: LibraryView(),
           ),
         ),
       ];
     }
 
-    // -- Settings view ---------------------------------------------
-    if (isSettingsView) {
+    if (_currentNavIndex == 3) {
       return [
-        SliverToBoxAdapter(
+        const SliverToBoxAdapter(
           child: Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: const SettingsView(),
+            padding: EdgeInsets.only(top: 4),
+            child: SettingsView(),
           ),
         ),
       ];
     }
 
-    // -- Home view ------------------------------------------------
     if (provider.files.isEmpty && _searchQuery.isEmpty) {
       return const [SliverFillRemaining(child: EmptyState())];
     }
 
     return [
       _buildSectionHeader('Recent', showActiveDot: showActiveDot),
-      _buildFileList(provider),
+      _buildFileGrid(provider),
     ];
   }
 
-  // ---------------------------------------------------------------------------
-  // Private helpers
-  // ---------------------------------------------------------------------------
-
-  /// Filter the provider's file list by the current search query.
-  List<RecentFile> _filteredFiles(List<RecentFile> all) {
-    if (_searchQuery.isEmpty) return all;
-    final q = _searchQuery.toLowerCase();
-    return all.where((f) => f.name.toLowerCase().contains(q)).toList();
-  }
-
-  /// Section header row ("Recent" / "Favorites") with a functional sort
-  /// button on the trailing edge. The icon shows a small primary-colored dot
-  /// whenever a non-default sort is active, as a visual cue. Rebuilt on
-  /// theme changes like before.
   Widget _buildSectionHeader(String title, {required bool showActiveDot}) {
+    final colors = AppColors.schemeOf(context);
+
     return SliverToBoxAdapter(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-        child: Consumer<ThemeProvider>(
-          builder: (context, _, _) {
-            return Row(
-              children: [
-                Text(
-                  title,
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+        child: Row(
+          children: [
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: colors.textPrimary,
+              ),
+            ),
+            const Spacer(),
+            if (title == 'Recent' && !_showAllRecents)
+              GestureDetector(
+                onTap: () => setState(() => _showAllRecents = true),
+                child: Text(
+                  'See all',
                   style: TextStyle(
-                    fontSize: 16,
+                    fontSize: 14,
                     fontWeight: FontWeight.w600,
-                    color: AppColors.colorOf(
-                      context,
-                      'textPrimary',
-                    ),
+                    color: colors.accent,
                   ),
                 ),
-                const Spacer(),
-                _buildSortButton(showActiveDot: showActiveDot),
-              ],
-            );
-          },
+              ),
+            if (title == 'Recent' && _showAllRecents) const SizedBox(width: 8),
+            const SizedBox(width: 4),
+            _buildViewToggle(),
+            const SizedBox(width: 4),
+            _buildSortButton(showActiveDot: showActiveDot),
+          ],
         ),
       ),
     );
   }
 
-  /// Sort trigger for the section header — opens the sort bottom sheet.
-  /// A dot badge marks non-default sorts.
-  ///
-  /// PERFORMANCE: [showActiveDot] is computed in the Consumer builder and
-  /// threaded down. We avoid calling context.select() here because
-  /// this.context belongs to _HomeScreenState — a widget that is NOT currently
-  /// building at this point (Consumer is). The Provider package
-  /// asserts debugDoingBuild on the element owning the context, which fails
-  /// for HomeScreen when called from a descendant's build.
+  Widget _buildViewToggle() {
+    final colors = AppColors.schemeOf(context);
+    final isGrid = _viewMode == RecentViewMode.grid;
+
+    return InkWell(
+      onTap: () =>
+          _setViewMode(isGrid ? RecentViewMode.list : RecentViewMode.grid),
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.all(6),
+        child: Tooltip(
+          message: isGrid ? 'List view' : 'Grid view',
+          child: Icon(
+            isGrid ? Icons.view_list_rounded : Icons.grid_view_rounded,
+            size: 20,
+            color: colors.textSecondary,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildSortButton({required bool showActiveDot}) {
+    final colors = AppColors.schemeOf(context);
 
     return InkWell(
       onTap: () => showSortSheet(context),
@@ -586,9 +732,7 @@ class _HomeScreenState extends State<HomeScreen> {
             Icon(
               Icons.sort_rounded,
               size: 20,
-              color: showActiveDot
-                  ? AppColors.colorOf(context, 'primary')
-                  : AppColors.colorOf(context, 'textMuted'),
+              color: showActiveDot ? colors.accent : colors.textSecondary,
             ),
             if (showActiveDot)
               Positioned(
@@ -598,7 +742,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   width: 7,
                   height: 7,
                   decoration: BoxDecoration(
-                    color: AppColors.colorOf(context, 'primary'),
+                    color: colors.accent,
                     shape: BoxShape.circle,
                   ),
                 ),
@@ -609,24 +753,15 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Build either the file list or a "no search results" message.
-  ///
-  /// [favoritesOnly] sources the list from the provider's favorited files
-  /// instead of all recent files — same card widget and search filtering.
-  /// Ordering: search filter first, then the shared sort preference
-  /// ([RecentFilesProvider.sortFiles]) applied to the filtered results.
-  ///
-  /// PERFORMANCE: Sort + filter results are cached and only recomputed when
-  /// the provider's version counter changes (data/sort-mode mutation) or
-  /// the search query changes. This avoids expensive re-sorting on every
-  /// rebuild frame (e.g. during scroll when the Consumer rebuilds).
-  Widget _buildFileList(RecentFilesProvider provider,
-      {bool favoritesOnly = false}) {
-    final needsRecompute = _cachedVersion != provider.version ||
+  Widget _buildFileGrid(
+    RecentFilesProvider provider, {
+    bool favoritesOnly = false,
+  }) {
+    final needsRecompute =
+        _cachedVersion != provider.version ||
         _cachedSearchQuery != _searchQuery ||
         _cachedSortMode != provider.sortMode;
 
-    List<RecentFile> filtered;
     if (needsRecompute) {
       _cachedVersion = provider.version;
       _cachedSearchQuery = _searchQuery;
@@ -639,171 +774,185 @@ class _HomeScreenState extends State<HomeScreen> {
       _cachedSortedFavorites = provider.sortFiles(_filteredFiles(favBase));
     }
 
-    filtered = favoritesOnly ? _cachedSortedFavorites! : _cachedSortedAll!;
+    var filtered = favoritesOnly ? _cachedSortedFavorites! : _cachedSortedAll!;
+
+    if (!favoritesOnly && !_showAllRecents && _searchQuery.isEmpty) {
+      filtered = filtered.take(9).toList();
+    }
 
     if (filtered.isEmpty) {
-      return const SliverFillRemaining(
-        child: NoSearchResults(query: ''), // query shown inside widget
-      );
+      return const SliverFillRemaining(child: NoSearchResults(query: ''));
+    }
+
+    if (_viewMode == RecentViewMode.list) {
+      return _buildFileList(filtered);
     }
 
     return SliverPadding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
-      sliver: SliverList.separated(
-        itemCount: filtered.length,
-        separatorBuilder: (_, i) => const SizedBox(height: 0),
-        itemBuilder: (context, index) {
+      sliver: SliverGrid(
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3,
+          mainAxisSpacing: 16,
+          crossAxisSpacing: 12,
+          childAspectRatio: 0.55,
+        ),
+        delegate: SliverChildBuilderDelegate((context, index) {
           final file = filtered[index];
-          return RecentFileCard(
+          return PdfGridCard(
             key: ValueKey(file.path),
             file: file,
             onTap: () => _openFile(file),
-            onMenuAction: (action) => _onMenuAction(action, file),
             onToggleFavorite: () =>
                 context.read<RecentFilesProvider>().toggleFavorite(file.path),
+            onLongPress: () => _showFileActions(file),
           );
-        },
+        }, childCount: filtered.length),
       ),
     );
   }
 
-  /// Floating pill-shaped navigation bar with Home, Favorites, Add, Library, and Settings.
-  Widget _buildFloatingBar() {
-    return Container(
-      height: 64,
-      decoration: BoxDecoration(
-        color: AppColors.colorOf(context, 'surface'),
-        borderRadius: BorderRadius.circular(28),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.10),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          // Home button
-          IconButton(
-            onPressed: () => setState(() => _currentNavIndex = 0),
-            icon: Icon(
-              Icons.home_rounded,
-              size: 28,
-              color: _currentNavIndex == 0
-                  ? AppColors.colorOf(context, 'primary')
-                  : AppColors.colorOf(context, 'textMuted'),
-            ),
-          ),
+  Widget _buildFileList(List<RecentFile> files) {
+    final colors = AppColors.schemeOf(context);
 
-          // Favorites button
-          IconButton(
-            onPressed: () => setState(() => _currentNavIndex = 1),
-            icon: Icon(
-              Icons.star_rounded,
-              size: 28,
-              color: _currentNavIndex == 1
-                  ? AppColors.colorOf(context, 'primary')
-                  : AppColors.colorOf(context, 'textMuted'),
-            ),
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      sliver: SliverToBoxAdapter(
+        child: Container(
+          decoration: BoxDecoration(
+            color: colors.surface,
+            borderRadius: BorderRadius.circular(AppColors.radiusCard),
+            border: Border.all(color: colors.border),
           ),
-
-          // Center add button (replaces the docked FAB)
-          GestureDetector(
-            onTap: _pickFile,
-            child: Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: AppColors.colorOf(context, 'primary'),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.add_rounded,
-                color: Colors.white,
-                size: 26,
-              ),
-            ),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              for (var i = 0; i < files.length; i++) ...[
+                if (i > 0)
+                  Divider(height: 1, thickness: 1, color: colors.border),
+                RecentFileListRow(
+                  key: ValueKey(files[i].path),
+                  file: files[i],
+                  onTap: () => _openFile(files[i]),
+                  onToggleFavorite: () => context
+                      .read<RecentFilesProvider>()
+                      .toggleFavorite(files[i].path),
+                  onMenu: () => _showFileActions(files[i]),
+                  onLongPress: () => _showFileActions(files[i]),
+                ),
+              ],
+            ],
           ),
-
-          // Library button
-          IconButton(
-            onPressed: () => setState(() => _currentNavIndex = 2),
-            icon: Icon(
-              Icons.library_books_rounded,
-              size: 28,
-              color: _currentNavIndex == 2
-                  ? AppColors.colorOf(context, 'primary')
-                  : AppColors.colorOf(context, 'textMuted'),
-            ),
-          ),
-
-          // Settings button
-          IconButton(
-            onPressed: () => setState(() => _currentNavIndex = 3),
-            icon: Icon(
-              Icons.settings_rounded,
-              size: 28,
-              color: _currentNavIndex == 3
-                  ? AppColors.colorOf(context, 'primary')
-                  : AppColors.colorOf(context, 'textMuted'),
-            ),
-          ),
-        ],
+        ),
       ),
     );
+  }
+
+  List<RecentFile> _filteredFiles(List<RecentFile> all) {
+    if (_searchQuery.isEmpty) return all;
+    final q = _searchQuery.toLowerCase();
+    return all.where((f) => f.name.toLowerCase().contains(q)).toList();
   }
 }
 
-/// A tappable card for a tool/action on the Home screen.
-///
-/// Reusable — designed so future tools (e.g. "PDF Compress", "Page Extract")
-/// can be added by simply calling `ToolCard(...)` with different parameters.
-/// Styled to match [RecentFileCard]: same card color, border, radius, and
-/// shadow treatment.
-class ToolCard extends StatelessWidget {
+// -----------------------------------------------------------------------------
+// Private UI components
+// -----------------------------------------------------------------------------
+
+class _ActionCard extends StatelessWidget {
   final IconData icon;
-  final Color iconBackground;
-  final Color iconColor;
   final String title;
   final String subtitle;
+  final Color background;
+  final Color foreground;
+  final Color subtitleColor;
+  final Color border;
   final VoidCallback onTap;
 
-  const ToolCard({
-    super.key,
+  const _ActionCard({
     required this.icon,
-    required this.iconBackground,
-    required this.iconColor,
     required this.title,
     required this.subtitle,
+    required this.background,
+    required this.foreground,
+    required this.subtitleColor,
+    required this.border,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        height: 110,
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: AppColors.colorOf(context, 'card'),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: AppColors.colorOf(context, 'border')),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.06),
-              blurRadius: 10,
-              offset: const Offset(0, 2),
+          color: background,
+          borderRadius: BorderRadius.circular(AppColors.radiusCard),
+          border: Border.all(color: border),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, size: 28, color: foreground),
+            const Spacer(),
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: foreground,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              subtitle,
+              style: TextStyle(fontSize: 12, color: subtitleColor),
             ),
           ],
         ),
-        child: Row(
+      ),
+    );
+  }
+}
+
+/// A standalone quick-tool card: colored icon box, tool name and a one-line
+/// subtitle, laid out as its own bordered card (no shared background strip).
+class _QuickToolCard extends StatelessWidget {
+  final IconData icon;
+  final String name;
+  final String subtitle;
+  final Color iconBackground;
+  final Color iconColor;
+  final VoidCallback onTap;
+
+  const _QuickToolCard({
+    required this.icon,
+    required this.name,
+    required this.subtitle,
+    required this.iconBackground,
+    required this.iconColor,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors.schemeOf(context);
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(AppColors.radiusCard),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 16, 12, 14),
+        decoration: BoxDecoration(
+          color: colors.surface,
+          borderRadius: BorderRadius.circular(AppColors.radiusCard),
+          border: Border.all(color: colors.border),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            // Icon chip (matches RecentFileCard badge style)
             Container(
               width: 44,
               height: 44,
@@ -811,11 +960,90 @@ class ToolCard extends StatelessWidget {
                 color: iconBackground,
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Icon(icon, color: iconColor, size: 24),
+              child: Icon(icon, size: 22, color: iconColor),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: colors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              subtitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11, color: colors.textSecondary),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A muted, theme-aware background+foreground pair for the tool entry points.
+///
+/// Index: 0 = Split (muted violet), 1 = Merge (muted blue), 2 = Images-to-PDF
+/// (accent red — the flagship tool). Each pair stays soft and harmonious with
+/// the neutral+accent palette in both light and dark mode.
+(Color, Color) _toolTint(BuildContext context, int index) {
+  final dark = AppColors.isDark(context);
+  switch (index) {
+    case 0: // Split — light purple box, purple icon
+      return dark
+          ? (const Color(0xFF2B2335), const Color(0xFFB79BD6))
+          : (const Color(0xFFEFE9FB), const Color(0xFF7C5CD6));
+    case 1: // Merge — light blue box, blue icon
+      return dark
+          ? (const Color(0xFF1D2738), const Color(0xFF7EA6E0))
+          : (const Color(0xFFE3F1FB), const Color(0xFF3186C4));
+    default: // Images to PDF — accent red
+      return dark
+          ? (const Color(0xFF3A1E22), const Color(0xFFFF4A56))
+          : (const Color(0xFFFCE4E6), const Color(0xFFEF3F4B));
+  }
+}
+
+class _ImportOptionRow extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _ImportOptionRow({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors.schemeOf(context);
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(AppColors.radiusCard),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: colors.accentTint,
+                borderRadius: BorderRadius.circular(AppColors.radiusChip),
+              ),
+              child: Icon(icon, size: 22, color: colors.accent),
             ),
             const SizedBox(width: 14),
-
-            // Title + subtitle
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -823,31 +1051,145 @@ class ToolCard extends StatelessWidget {
                   Text(
                     title,
                     style: TextStyle(
-                      fontSize: 14,
+                      fontSize: 15,
                       fontWeight: FontWeight.w600,
-                      color: AppColors.colorOf(context, 'textPrimary'),
+                      color: colors.textPrimary,
                     ),
                   ),
-                  const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: AppColors.colorOf(context, 'textMuted'),
-                    ),
+                    style: TextStyle(fontSize: 12, color: colors.textSecondary),
                   ),
                 ],
               ),
             ),
-
-            // Chevron
-            Icon(
-              Icons.chevron_right_rounded,
-              color: AppColors.colorOf(context, 'textMuted'),
-              size: 22,
-            ),
+            Icon(Icons.chevron_right_rounded, color: colors.textSecondary),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// The circular "Add document" action, rendered in Scaffold's FAB slot so it
+/// stays pinned above the bottom navigation bar at every scroll offset.
+///
+/// The brand gradient is alive: the ramp drifts slowly back and forth so the
+/// colours appear to flow within the circle. The circle itself never moves or
+/// resizes, and the four brand colours never change — only the gradient's
+/// axis does, so the [BrandGradient] contrast guarantees still hold.
+///
+/// It is its own `StatefulWidget` rather than a method on the home screen so
+/// the ticker lives exactly as long as the button: when the user switches to
+/// Favorites, Library or Settings the slot becomes `null`, this widget is
+/// unmounted and the controller is disposed, so nothing keeps ticking.
+class _AddDocumentFab extends StatefulWidget {
+  const _AddDocumentFab();
+
+  @override
+  State<_AddDocumentFab> createState() => _AddDocumentFabState();
+}
+
+class _AddDocumentFabState extends State<_AddDocumentFab>
+    with SingleTickerProviderStateMixin {
+  /// One full there-and-back sweep. Long enough to read as ambient rather than
+  /// as motion.
+  static const Duration _shimmerPeriod = Duration(seconds: 5);
+
+  /// How far the gradient axis drifts, in alignment units. The ramp spans -1
+  /// to 1, so this is a small fraction of the circle: a visible but gentle
+  /// shift rather than the colours cycling round.
+  static const double _drift = 0.16;
+
+  late final AnimationController _shimmer = AnimationController(
+    vsync: this,
+    duration: _shimmerPeriod,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _shimmer.repeat();
+  }
+
+  @override
+  void dispose() {
+    _shimmer.dispose();
+    super.dispose();
+  }
+
+  /// Mirrors `_HomeScreenState._pickFile` exactly — the same provider call, the
+  /// same push — so moving the button into its own widget did not change what
+  /// tapping it does.
+  Future<void> _pickFile() async {
+    final provider = context.read<RecentFilesProvider>();
+    final file = await provider.pickAndOpenPdf();
+    if (file != null && mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => PdfViewerScreen(file: file)),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'Add document',
+      child: SizedBox(
+        width: _addFabSize,
+        height: _addFabSize,
+        child: Material(
+          color: Colors.transparent,
+          shape: const CircleBorder(),
+          // Material's resting FAB elevation.
+          elevation: 6,
+          clipBehavior: Clip.antiAlias,
+          child: AnimatedBuilder(
+            animation: _shimmer,
+            // Only the gradient layer rebuilds per frame. The icon and the
+            // ripple target are built once and passed through as `child`, so
+            // the recurring repaint never touches them or the home screen.
+            builder: (context, child) {
+              // A cosine: zero velocity at both ends of the sweep, so the
+              // ramp eases in and back out instead of running linearly, and
+              // the value returns to its start each cycle for a seamless loop.
+              final wave = -math.cos(_shimmer.value * 2 * math.pi);
+              final shift = _drift * wave;
+              return Ink(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: BrandGradient.linearFor(
+                    context,
+                    begin: Alignment(-1 + shift, -1 + shift * 0.6),
+                    end: Alignment(1 + shift, 1 + shift * 0.6),
+                  ),
+                ),
+                child: child,
+              );
+            },
+            child: _AddDocumentTapTarget(onTap: _pickFile),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The FAB's ripple target and "+" glyph, split out so the shimmer can rebuild
+/// the gradient without rebuilding them.
+class _AddDocumentTapTarget extends StatelessWidget {
+  final VoidCallback onTap;
+
+  const _AddDocumentTapTarget({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      customBorder: const CircleBorder(),
+      child: const Center(
+        child: Icon(Icons.add_rounded, color: Colors.white, size: 28),
       ),
     );
   }

@@ -49,7 +49,7 @@ lib/
 └── widgets/
     ├── import_section.dart           → Files / Drive / Scan / URL import buttons
     ├── recent_file_card.dart         → File card: PDF badge, metadata, favorite star, 3-dot menu
-    ├── folia_search_bar.dart         → Reusable search input (query owned by the parent)
+    ├── xpdf_search_bar.dart          → Reusable search input (query owned by the parent)
     ├── empty_state.dart / empty_favorites_state.dart / no_search_results.dart
     ├── folder_card.dart / create_folder_dialog.dart / confirm_dialog.dart / move_to_folder_sheet.dart / sort_sheet.dart
     ├── url_import_dialog.dart        → Pasted-URL → download flow

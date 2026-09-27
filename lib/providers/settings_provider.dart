@@ -36,8 +36,11 @@ class SettingsProvider extends ChangeNotifier {
 
   // -- Initialization --------------------------------------------------------
 
-  /// Called once at app start to hydrate the settings from disk.
+  /// Called once at app start to hydrate the settings from disk. Idempotent —
+  /// safe to call again (e.g. stale wiring from an older entry point), but a
+  /// repeated call never re-reads the disk.
   Future<void> loadSettings() async {
+    if (_loaded) return;
     _pageLayoutMode = await StorageService.loadPageLayoutMode();
     _rememberLastPage = await StorageService.loadRememberLastPage();
     _nightMode = await StorageService.loadNightMode();
@@ -71,6 +74,12 @@ class SettingsProvider extends ChangeNotifier {
       'SharedPreferences key "default_page_layout"',
     );
     await StorageService.savePageLayoutMode(mode);
+    // TEMPORARY DEBUG: re-read from SharedPreferences to confirm the write
+    // actually persisted (not just the in-memory field).
+    debugPrint(
+      '[Settings] setPageLayoutMode("$mode") → re-read from '
+      'SharedPreferences: "${await StorageService.loadPageLayoutMode()}"',
+    );
     notifyListeners();
   }
 
@@ -92,6 +101,12 @@ class SettingsProvider extends ChangeNotifier {
       'SharedPreferences key "remember_last_page"',
     );
     await StorageService.saveRememberLastPage(value);
+    // TEMPORARY DEBUG: re-read from SharedPreferences to confirm the write
+    // actually persisted (not just the in-memory field).
+    debugPrint(
+      '[Settings] setRememberLastPage($value) → re-read from '
+      'SharedPreferences: ${await StorageService.loadRememberLastPage()}',
+    );
     notifyListeners();
   }
 

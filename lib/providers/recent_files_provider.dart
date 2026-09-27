@@ -109,10 +109,12 @@ class RecentFilesProvider extends ChangeNotifier {
 
   // -- Core operations -------------------------------------------------------
 
-  /// Pick a new PDF from the device and add it (or move it to the top).
+  /// Pick a new PDF from the device and add it (or move it to the top),
+  /// optionally assigning it straight into [folderId]'s folder
+  /// (`null` = Uncategorized).
   ///
   /// Returns the [RecentFile] if a file was picked, `null` otherwise.
-  Future<RecentFile?> pickAndOpenPdf() async {
+  Future<RecentFile?> pickAndOpenPdf({String? folderId}) async {
     final path = await FileService.pickPdfFile();
     if (path == null) return null;
 
@@ -125,6 +127,7 @@ class RecentFilesProvider extends ChangeNotifier {
       size: size,
       lastOpened: DateTime.now().toIso8601String(),
       lastPage: 1,
+      folderId: folderId,
     );
 
     _addOrUpdate(recent);
@@ -155,12 +158,21 @@ class RecentFilesProvider extends ChangeNotifier {
   /// Record that the user has opened a file — moves it to the top of the list.
   Future<void> openFile(String path, {String? name, int? size}) async {
     final existing = _files.where((f) => f.path == path);
+    final int carriedLastPage = existing.isNotEmpty ? existing.first.lastPage : 1;
     final recent = RecentFile(
       path: path,
       name: name ?? (existing.isNotEmpty ? existing.first.name : path.split('/').last),
       size: size ?? (existing.isNotEmpty ? existing.first.size : 0),
       lastOpened: DateTime.now().toIso8601String(),
-      lastPage: existing.isNotEmpty ? existing.first.lastPage : 1,
+      lastPage: carriedLastPage,
+    );
+
+    // TEMPORARY DEBUG: the viewer's post-frame "mark as opened" call must NOT
+    // clobber the saved page — carriedLastPage is what a future initState
+    // reads (when Remember-last-page is ON) to restore the position.
+    debugPrint(
+      '[Recents] openFile(path="$path") → carried lastPage=$carriedLastPage'
+      '${existing.isNotEmpty ? ' (from existing entry)' : ' (new file → 1)'}',
     );
 
     _addOrUpdate(recent);
@@ -169,7 +181,14 @@ class RecentFilesProvider extends ChangeNotifier {
   /// Save the page number the user is currently viewing for a given file.
   Future<void> updatePageNumber(String path, int page) async {
     final index = _files.indexWhere((f) => f.path == path);
-    if (index == -1) return;
+    if (index == -1) {
+      // TEMPORARY DEBUG: entry missing (list cleared, or open-with race).
+      debugPrint(
+        '[Recents] updatePageNumber(path="$path", page=$page) → '
+        '✗ file NOT in recent list, nothing persisted',
+      );
+      return;
+    }
 
     final old = _files[index];
     _files[index] = RecentFile(
@@ -183,6 +202,20 @@ class RecentFilesProvider extends ChangeNotifier {
     );
     await StorageService.saveRecentFiles(_files);
     notifyListeners();
+    // TEMPORARY DEBUG: confirm the page landed on disk (re-read back).
+    final List<RecentFile> persisted = await StorageService.loadRecentFiles();
+    RecentFile? saved;
+    for (final RecentFile f in persisted) {
+      if (f.path == path) {
+        saved = f;
+        break;
+      }
+    }
+    debugPrint(
+      '[Recents] updatePageNumber(path="$path", page=$page) → persisted; '
+      'disk lastPage=${saved?.lastPage ?? 'MISSING'}'
+      '${saved != null && saved.lastPage == page ? ' ✓' : ' ✗'}',
+    );
   }
 
   /// Flip the favorite flag for a given file and persist the change.

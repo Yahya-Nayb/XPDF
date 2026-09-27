@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 
-import 'colors.dart';
+import 'theme/app_theme.dart';
 import 'providers/annotations_provider.dart';
+import 'providers/bookmarks_provider.dart';
 import 'providers/folders_provider.dart';
 import 'providers/recent_files_provider.dart';
 import 'providers/settings_provider.dart';
 import 'providers/theme_provider.dart';
 import 'screens/home_screen.dart';
+import 'screens/splash_screen.dart';
 import 'services/open_with_listener.dart';
+import 'services/storage_service.dart';
 
 /// Shared navigator key so the "Open with" listener (which lives below the
 /// MaterialApp's Navigator) can push the PDF viewer from outside the widget
@@ -19,61 +23,50 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // debugPrintRebuildDirtyWidgets = true; // OFF: adds rebuild-logging overhead that slows scroll
 
+  // Load local development configuration before any service reads the Gemini
+  // key. The .env file is ignored by Git and bundled as a Flutter asset.
+  await dotenv.load(fileName: '.env');
+
   // Load dark-mode preference synchronously before the first frame so the
   // correct theme is applied instantly — no flash of the wrong theme.
   final themeProvider = ThemeProvider();
   await themeProvider.loadTheme();
 
-  runApp(FoliaApp(themeProvider: themeProvider));
+  // Read the first-launch flag up front so the home screen knows whether to
+  // push the onboarding tour (returning users never see even a flash of it).
+  final hasSeenOnboarding = await StorageService.loadHasSeenOnboarding();
+
+  // BUG FIX (reading defaults): hydrate the reading-defaults settings from
+  // SharedPreferences BEFORE runApp. Previously loadSettings() was fired
+  // unawaited from HomeScreen's post-frame callback, so on a cold start
+  // (especially a deep-link "Open with" launch, whose listener runs before
+  // HomeScreen's callback) a PdfViewerScreen could snapshot the hardcoded
+  // defaults before the real persisted values arrived — making "Page layout"
+  // and "Remember last page" look dead for the first file opened. Like the
+  // theme above, settings are now authoritative from the very first frame.
+  final settingsProvider = SettingsProvider();
+  await settingsProvider.loadSettings();
+
+  runApp(
+    XpdfApp(
+      themeProvider: themeProvider,
+      settingsProvider: settingsProvider,
+      showOnboarding: !hasSeenOnboarding,
+    ),
+  );
 }
 
-/// Root widget of the Folia application.
-class FoliaApp extends StatelessWidget {
+/// Root widget of the XPDF application.
+class XpdfApp extends StatelessWidget {
   final ThemeProvider themeProvider;
-  const FoliaApp({super.key, required this.themeProvider});
-
-  /// Shared Switch theming applied to BOTH ThemeData variants so every
-  /// Switch in the app keeps a clearly visible thumb in all four visual
-  /// combos (ON/OFF × hovered/resting).
-  ///
-  /// Why this exists: the ColorScheme below only sets primary/surface/
-  /// onSurface/outline. The M3 switch's ON-thumb normally derives from
-  /// `colorScheme.onPrimary` (unset here → framework default) while hover/
-  /// press draw primary-tinted state layers over the track — combinations
-  /// that could merge into one flat blob. Pinning a constant white thumb,
-  /// palette-colored tracks, and faint overlays makes the contrast
-  /// structural instead of dependent on unspecified theme slots.
-  static SwitchThemeData _foliaSwitchTheme({
-    required Color activeTrack,
-    required Color inactiveTrack,
-  }) {
-    return SwitchThemeData(
-      // White thumb in every enabled state → always contrasts against both
-      // the blue ON track and the muted-gray OFF track.
-      thumbColor: const WidgetStatePropertyAll(Colors.white),
-      trackColor: WidgetStateProperty.resolveWith(
-        (states) =>
-            states.contains(WidgetState.selected) ? activeTrack : inactiveTrack,
-      ),
-      // No outline ring — keeps OFF state as a clean gray pill.
-      trackOutlineColor: const WidgetStatePropertyAll(Colors.transparent),
-      // Hover/press highlight: a faint tint of whichever track color is
-      // currently showing. Low alpha = gentle feedback that never obscures
-      // the white thumb or flattens the track.
-      overlayColor: WidgetStateProperty.resolveWith((states) {
-        final base = states.contains(WidgetState.selected)
-            ? activeTrack
-            : inactiveTrack;
-        if (states.contains(WidgetState.pressed)) {
-          return base.withValues(alpha: 0.12);
-        }
-        if (states.contains(WidgetState.hovered)) {
-          return base.withValues(alpha: 0.08);
-        }
-        return Colors.transparent;
-      }),
-    );
-  }
+  final SettingsProvider settingsProvider;
+  final bool showOnboarding;
+  const XpdfApp({
+    super.key,
+    required this.themeProvider,
+    required this.settingsProvider,
+    this.showOnboarding = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -95,10 +88,15 @@ class FoliaApp extends StatelessWidget {
         ),
 
         // Reading-defaults settings (page layout mode, remember last page).
-        ChangeNotifierProvider(create: (_) => SettingsProvider()),
+        // Already hydrated in main() before runApp (see the BUG FIX comment
+        // there) so no viewer can ever snapshot stale defaults.
+        ChangeNotifierProvider<SettingsProvider>.value(value: settingsProvider),
 
         // User-created PDF highlight annotations, grouped by file path.
         ChangeNotifierProvider(create: (_) => AnnotationsProvider()),
+
+        // User-created page bookmarks, grouped by file path (BUG 3 feature).
+        ChangeNotifierProvider(create: (_) => BookmarksProvider()),
       ],
       child: Consumer<ThemeProvider>(
         builder: (context, themeProvider, _) {
@@ -106,53 +104,21 @@ class FoliaApp extends StatelessWidget {
             title: 'XPDF',
             debugShowCheckedModeBanner: false,
 
-            // Light theme
-            theme: ThemeData(
-              useMaterial3: true,
-              brightness: Brightness.light,
-              scaffoldBackgroundColor: AppColors.background,
-              switchTheme: _foliaSwitchTheme(
-                activeTrack: AppColors.primary,
-                inactiveTrack: AppColors.textMuted,
-              ),
-              colorScheme: const ColorScheme.light(
-                primary: AppColors.primary,
-                surface: AppColors.surface,
-                onSurface: AppColors.textPrimary,
-                outline: AppColors.border,
-                outlineVariant: AppColors.border,
-              ),
-            ),
-
-            // Dark theme
-            darkTheme: ThemeData(
-              useMaterial3: true,
-              brightness: Brightness.dark,
-              scaffoldBackgroundColor: AppColors.darkBackground,
-              switchTheme: _foliaSwitchTheme(
-                activeTrack: AppColors.darkPrimary,
-                inactiveTrack: AppColors.darkTextMuted,
-              ),
-              colorScheme: const ColorScheme.dark(
-                primary: AppColors.darkPrimary,
-                surface: AppColors.darkSurface,
-                onSurface: AppColors.darkTextPrimary,
-                outline: AppColors.darkBorder,
-                outlineVariant: AppColors.darkBorder,
-              ),
-            ),
+            theme: AppTheme.light(),
+            darkTheme: AppTheme.dark(),
 
             // Driven by ThemeProvider
             themeMode: themeProvider.themeMode,
 
             navigatorKey: navigatorKey,
 
-            // OpenWithListener wraps the home screen so PDFs opened via
-            // Android's "Open with" dialog are captured on both cold and warm
-            // starts and pushed straight into the PDF viewer.
-            home: OpenWithListener(
-              navigatorKey: navigatorKey,
-              child: const HomeScreen(),
+            // Start with the Flutter splash, then replace it with the existing
+            // home/listener stack after 2.5 seconds.
+            home: SplashScreen(
+              destination: OpenWithListener(
+                navigatorKey: navigatorKey,
+                child: HomeScreen(showOnboarding: showOnboarding),
+              ),
             ),
           );
         },

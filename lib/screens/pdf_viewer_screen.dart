@@ -10,10 +10,15 @@ import 'package:share_plus/share_plus.dart';
 
 import '../colors.dart';
 import '../models/pdf_annotation.dart';
+import '../models/pdf_bookmark.dart';
 import '../models/recent_file.dart';
 import '../providers/annotations_provider.dart';
+import '../providers/bookmarks_provider.dart';
 import '../providers/recent_files_provider.dart';
 import '../providers/settings_provider.dart';
+import 'chat_screen.dart';
+import '../services/pdf_text_extraction_service.dart';
+import '../services/storage_service.dart';
 import '../widgets/confirm_dialog.dart';
 
 /// Full-screen PDF viewer with zoom controls, jump-to-page,
@@ -41,6 +46,22 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   /// Current visible height of the viewer, tracked for the single-page
   /// layout (each page gets its own viewport-height slot).
   double _viewHeight = 0;
+
+  // Memoized single-page layout. pdfrx re-runs `layoutPages` on EVERY viewer
+  // rebuild (its StreamBuilder→LayoutBuilder→_updateLayout→_relayoutPages
+  // chain, pdf_viewer.dart:604+1172), and rebuilds happen far more often than
+  // the inputs actually change: page-image cache completions, the one-shot
+  // initial size-change invalidate and (during progressive load) each page
+  // that gets added. Recomputing (and logging) all 122+ slots for every one of
+  // those is pure waste — the layout only depends on the page roster
+  // (`pages.length` grows monotonically while loading; individual pages never
+  // change size) and `_viewHeight`, so we cache it and re-run/re-log
+  // exclusively when one of those two inputs changes. Returning the SAME
+  // object also lets pdfrx's `_layout == newLayout` short-circuit (no
+  // layout-change handling) on every unrelated rebuild.
+  PdfPageLayout? _cachedSinglePageLayout;
+  double _cachedLayoutViewHeight = double.negativeInfinity;
+  int _cachedLayoutPageCount = -1;
 
   // ---------------------------------------------------------------------------
   // Page tracking
@@ -90,6 +111,11 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   final TextEditingController _searchInputController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
 
+  // PDF text is extracted lazily on the first AI-chat launch and reused if the
+  // user returns to chat while this viewer remains open.
+  String? _cachedAiPdfContent;
+  bool _preparingAiChat = false;
+
   // ---------------------------------------------------------------------------
   // Cached PdfViewerParams callbacks — stable references so pdfrx's
   // didUpdateWidget doesn't detect spurious param changes every build.
@@ -114,6 +140,32 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   final List<PdfAnnotation> _annotationsForFile = [];
 
   AnnotationsProvider? _annotationsProvider;
+
+  // ---------------------------------------------------------------------------
+  // Provider handles captured in initState for use at dispose() time.
+  //
+  // dispose() runs during widget-tree teardown, when this element is already
+  // deactivated — calling `context.read<...>()` (an InheritedWidget ancestor
+  // lookup) there throws "Looking up a deactivated widget's ancestor is
+  // unsafe" and aborts the whole dispose body, silently killing the
+  // "Remember last page" save. So instead of looking the providers up at
+  // dispose time, we grab them once in initState (context is valid there)
+  // and reuse the cached handles on the way out.
+  // ---------------------------------------------------------------------------
+
+  SettingsProvider? _settingsProvider;
+  RecentFilesProvider? _recentFilesProvider;
+
+  // ---------------------------------------------------------------------------
+  // User bookmarks
+  // ---------------------------------------------------------------------------
+
+  /// User-created bookmarks for the currently open file, kept as a cached
+  /// snapshot like [_annotationsForFile]. Refreshed from
+  /// [BookmarksProvider] only when this file's list actually changes.
+  final List<PdfBookmark> _bookmarksForFile = [];
+
+  BookmarksProvider? _bookmarksProvider;
 
   // ---------------------------------------------------------------------------
   // Floating selection toolbar (Highlight bar)
@@ -161,8 +213,14 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     // Snapshot reading defaults once — an already-open viewer is never
     // affected by settings changed mid-session.
     final settings = context.read<SettingsProvider>();
+    _settingsProvider = settings;
     _rememberLastPage = settings.rememberLastPage;
     _useSinglePageLayout = settings.isSinglePageLayout;
+
+    // Cached now (context is valid in initState) so dispose() never has to do
+    // an unsafe InheritedWidget lookup during teardown — see the field notes
+    // above. This is what _savePage() uses to persist the reading position.
+    _recentFilesProvider = context.read<RecentFilesProvider>();
 
     // TEMPORARY DEBUG: values the viewer will act on. These are the values
     // SettingsProvider hydrated from SharedPreferences at app start.
@@ -172,6 +230,26 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
       '(useSinglePage=$_useSinglePageLayout), '
       'rememberLastPage=$_rememberLastPage',
     );
+
+    // TEMPORARY DEBUG: re-read the persisted values directly from
+    // SharedPreferences to prove the snapshot above matches what is actually
+    // on disk (guards against a stale provider / un-hydrated defaults).
+    Future<void> verifyPersisted() async {
+      final diskLayout = await StorageService.loadPageLayoutMode();
+      final diskRemember = await StorageService.loadRememberLastPage();
+      debugPrint(
+        '[PdfViewer] initState "${widget.file.name}" ← disk re-read: '
+        'pageLayoutMode="$diskLayout" '
+        '(provider "${settings.pageLayoutMode}"'
+        '${diskLayout == settings.pageLayoutMode ? ' ✓ MATCH' : ' ✗ MISMATCH'} → '
+        'singlePage=$_useSinglePageLayout), '
+        'rememberLastPage=$diskRemember '
+        '(snapshot $_rememberLastPage'
+        '${diskRemember == _rememberLastPage ? ' ✓ MATCH' : ' ✗ MISMATCH'})',
+      );
+    }
+
+    verifyPersisted();
 
     // "Remember last page" off → always start at page 1 (and skip saving
     // the position on dispose).
@@ -213,12 +291,31 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     // refresh us via _onAnnotationsChanged (setState + mounted-guarded).
     _annotationsProvider?.loadAnnotations(widget.file.path);
 
+    // Subscribe to the bookmarks provider the same way: mirror its list for
+    // this file immediately (restored bookmarks may already be loaded), then
+    // keep it fresh via the listener below.
+    _bookmarksProvider = context.read<BookmarksProvider>()
+      ..addListener(_onBookmarksChanged);
+    _bookmarksForFile
+      ..clear()
+      ..addAll(
+        _bookmarksProvider?.bookmarksForFile(widget.file.path) ??
+            const <PdfBookmark>[],
+      );
+    _bookmarksProvider?.loadBookmarks(widget.file.path);
+    // TEMPORARY DEBUG: confirm restored bookmarks reach the snapshot at open.
+    debugPrint(
+      '[Bookmarks] viewer "${widget.file.name}" opened: '
+      '${_bookmarksForFile.length} bookmark(s) in snapshot',
+    );
+
     // TEMPORARY DEBUG: 1-second aggregated perf sampler (see counters above).
     _perfTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       debugPrint(
         '[Perf 1s] layout=${_useSinglePageLayout ? 'SINGLE' : 'continuous'} '
+        'currentPage=$_currentPage/$_totalPages '
         'zoom=${_zoomNotifier.value.toStringAsFixed(2)} '
-        'builds=$_perfBuilds ctrl=$_perfCtrl page=$_perfPage '
+        'builds=$_perfBuilds ctrl=$_perfCtrl pageEvents=$_perfPage '
         'viewSize=$_perfViewSize search=$_perfSearch',
       );
       _perfBuilds = _perfCtrl = _perfPage = _perfViewSize = _perfSearch = 0;
@@ -236,17 +333,33 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
         setState(() => _totalPages = _controller.pageCount);
       }
     };
-    _onViewerReady =
-        (PdfDocument document, PdfViewerController controller) async {
-          if (mounted) {
-            _textSearcher = PdfTextSearcher(_controller)
-              ..addListener(_onSearchUpdate);
-          }
-          final List<PdfOutlineNode> outline = await document.loadOutline();
-          if (mounted) {
-            setState(() => _outlineNodes = outline);
-          }
-        };
+    _onViewerReady = (PdfDocument document, PdfViewerController controller) async {
+      if (mounted) {
+        _textSearcher = PdfTextSearcher(_controller)
+          ..addListener(_onSearchUpdate);
+      }
+      // TEMPORARY DEBUG: equivalent one-shot confirmation for the
+      // CONTINUOUS path. `layoutPages == null` hands layout to pdfrx's
+      // native continuous scroll, so this log (like the single-mode
+      // `_pagedLayout` log) proves which code path is live for THIS open.
+      // The setting is snapshotted at open (late-final `_useSinglePageLayout`),
+      // so switching it in Settings only changes the NEXT open.
+      if (!_useSinglePageLayout) {
+        debugPrint(
+          '[Layout] "${widget.file.name}" viewer ready → CONTINUOUS mode '
+          'active (layoutPages=null, pdfrx native continuous scroll)',
+        );
+      } else {
+        debugPrint(
+          '[Layout] "${widget.file.name}" viewer ready → SINGLE mode '
+          'active (custom _pagedLayout, one page per viewport height)',
+        );
+      }
+      final List<PdfOutlineNode> outline = await document.loadOutline();
+      if (mounted) {
+        setState(() => _outlineNodes = outline);
+      }
+    };
 
     // Track the visible viewer height; in single-page mode a size change
     // means the per-page slots must be recomputed, so relayout. The first
@@ -267,6 +380,26 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     // (pdfrx 2.x has no built-in view mode — layout is fully driven by
     // this callback). Continuous scroll uses pdfrx's default layout.
     _pagedLayout = (List<PdfPage> pages, PdfViewerParams params) {
+      // pdfrx re-invokes this on every rebuild (see the field docs above).
+      // If the viewport height hasn't changed, hand back the cached layout and
+      // do NOT recompute or log — the layout is a pure function of `pages`
+      // (stable for a document) and `_viewHeight`, so this is safe.
+      if (_cachedSinglePageLayout != null &&
+          _viewHeight == _cachedLayoutViewHeight &&
+          pages.length == _cachedLayoutPageCount) {
+        return _cachedSinglePageLayout!;
+      }
+      // TEMPORARY DEBUG: this callback ONLY runs when single-page layout is
+      // active (continuous mode passes layoutPages:null and pdfrx lays out
+      // pages itself, so this never fires) — and thanks to the cache above it
+      // now only fires when the layout's inputs actually change (a page was
+      // added during progressive load, or the viewport height changed), never
+      // on every pdfrx rebuild.
+      debugPrint(
+        '[Layout] _pagedLayout recomputed for ${pages.length} page(s) → '
+        'SINGLE mode active, slotHeight=${_viewHeight > 0 ? _viewHeight.toStringAsFixed(0) : 'fallback(max-page-height)'}'
+        ' (layout inputs changed)',
+      );
       final double width =
           pages.fold<double>(0, (w, p) => p.width > w ? p.width : w) +
           params.margin * 2;
@@ -282,10 +415,14 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
         );
         y += slotHeight;
       }
-      return PdfPageLayout(
+      final PdfPageLayout layout = PdfPageLayout(
         pageLayouts: pageRects,
         documentSize: Size(width, y),
       );
+      _cachedLayoutViewHeight = _viewHeight;
+      _cachedLayoutPageCount = pages.length;
+      _cachedSinglePageLayout = layout;
+      return layout;
     };
 
     // Text selection — enabled so users can select words/lines. pdfrx keeps
@@ -374,6 +511,11 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
           }
           final List<Widget> widgets = <Widget>[];
           for (final PdfAnnotation annotation in anns) {
+            // DIAGNOSTIC: prove each annotation's stored color reaches the paint layer.
+            debugPrint(
+              '[Overlay] RENDER annotation ${annotation.id} → '
+              'colorHex=${annotation.colorHex}',
+            );
             final Color color = annotation.color.withValues(
               alpha: highlightAlpha,
             );
@@ -442,23 +584,54 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   void dispose() {
     // TEMPORARY DEBUG: stop the perf sampler.
     _perfTimer?.cancel();
+
+    // Capture everything the save path needs into local values BEFORE any
+    // async work / teardown completes. dispose() is called while this element
+    // is already deactivated, so `context.read<...>()` MUST NOT be used here
+    // (it throws "Looking up a deactivated widget's ancestor is unsafe").
+    // The providers below were cached in initState instead.
+    final String fileName = widget.file.name;
+    final String filePath = widget.file.path;
+    final int savedPage = _currentPage;
+
+    // TEMPORARY DEBUG: confirm the LIVE setting at save time matches the
+    // snapshot captured in initState (proves dispose reads the same value the
+    // rest of the viewer acted on) — read from the CACHED provider handle,
+    // not context.
+    final bool liveRemember =
+        _settingsProvider?.rememberLastPage ?? _rememberLastPage;
+    debugPrint(
+      '[PdfViewer] dispose "$fileName" → live '
+      'rememberLastPage=$liveRemember '
+      '(snapshot $_rememberLastPage'
+      '${liveRemember == _rememberLastPage ? ' ✓ MATCH' : ' ✗ MISMATCH'})',
+    );
     // "Remember last page" off → don't persist the reading position either.
     if (_rememberLastPage) {
       // TEMPORARY DEBUG: confirm the save path runs on close.
       debugPrint(
-        '[PdfViewer] dispose "${widget.file.name}" → '
-        'SAVING last page=$_currentPage',
+        '[PdfViewer] dispose "$fileName" → '
+        'SAVING last page=$savedPage',
       );
-      _savePage();
+      // Fire-and-forget is fine: max-thickness save while the screen is
+      // closing is not worth blocking teardown for. The completion debugPrint
+      // lives inside _savePage() (after the await), proving it finished.
+      _savePage(
+        _recentFilesProvider,
+        saveName: fileName,
+        savePath: filePath,
+        savePage: savedPage,
+      );
     } else {
       // TEMPORARY DEBUG: confirm the save path is skipped when the setting is off.
       debugPrint(
-        '[PdfViewer] dispose "${widget.file.name}" → '
+        '[PdfViewer] dispose "$fileName" → '
         'save SKIPPED (Remember-last-page OFF)',
       );
     }
     _controller.removeListener(_onControllerUpdate);
     _annotationsProvider?.removeListener(_onAnnotationsChanged);
+    _bookmarksProvider?.removeListener(_onBookmarksChanged);
     _zoomNotifier.dispose();
     _textSearcher?.removeListener(_onSearchUpdate);
     _textSearcher?.dispose();
@@ -480,8 +653,14 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   }
 
   /// Called when the text searcher finishes processing pages or updates state.
+  ///
+  /// Gated on `_searchActive` so idle searcher notifications (there are none
+  /// in practice unless a search is running, but the guard is cheap) cannot
+  /// trigger screen rebuilds — and therefore pdfrx relayouts — for the
+  /// non-search case.
   void _onSearchUpdate() {
     _perfSearch++; // TEMPORARY DEBUG
+    if (!_searchActive) return;
     if (mounted) setState(() {});
   }
 
@@ -516,6 +695,38 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
           x.colorHex != y.colorHex ||
           x.note != y.note ||
           x.rects.length != y.rects.length) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// Called whenever the bookmarks provider notifies (any file).
+  ///
+  /// Refreshes only when THIS file's bookmark list actually changed; edits to
+  /// other files' bookmarks are skipped so they can't trigger rebuilds here.
+  void _onBookmarksChanged() {
+    if (!mounted || _bookmarksProvider == null) return;
+    final List<PdfBookmark> fresh = _bookmarksProvider!.bookmarksForFile(
+      widget.file.path,
+    );
+    if (_sameBookmarks(_bookmarksForFile, fresh)) return;
+    setState(() {
+      _bookmarksForFile
+        ..clear()
+        ..addAll(fresh);
+    });
+  }
+
+  /// Cheap content equality for the bookmark-refresh check above. Compares
+  /// id, page, and label — enough to detect any change that would alter how
+  /// the panel and the app-bar toggle render.
+  bool _sameBookmarks(List<PdfBookmark> a, List<PdfBookmark> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      final PdfBookmark x = a[i];
+      final PdfBookmark y = b[i];
+      if (x.id != y.id || x.pageNumber != y.pageNumber || x.label != y.label) {
         return false;
       }
     }
@@ -734,10 +945,37 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   // Helpers
   // =========================================================================
 
-  void _savePage() {
-    context.read<RecentFilesProvider>().updatePageNumber(
-      widget.file.path,
-      _currentPage,
+  /// Persist the current page for this file through [RecentFilesProvider].
+  ///
+  /// Takes the provider handle plus plain values rather than doing a
+  /// `context.read<...>()` lookup — it is called from dispose(), where context
+  /// is no longer safe to use. [saveName]/[savePath]/[savePage] are captured
+  /// into locals in dispose() before the async work, so nothing is read off
+  /// the (soon nulled) widget afterwards.
+  Future<void> _savePage(
+    RecentFilesProvider? provider, {
+    required String saveName,
+    required String savePath,
+    required int savePage,
+  }) async {
+    if (provider == null) {
+      debugPrint(
+        '[PdfViewer] _savePage "$saveName" → ✗ provider not captured in '
+        'initState, save ABORTED',
+      );
+      return;
+    }
+    debugPrint(
+      '[PdfViewer] _savePage "$saveName" → '
+      'updatePageNumber(path="$savePath", page=$savePage)',
+    );
+    await provider.updatePageNumber(savePath, savePage);
+    // TEMPORARY DEBUG: this line runs only AFTER updatePageNumber finished —
+    // proving the save actually completed instead of silently dying from the
+    // deactivated-widget exception (the pre-fix behavior).
+    debugPrint(
+      '[PdfViewer] _savePage "$saveName" → updatePageNumber COMPLETED '
+      '(page $savePage persisted)',
     );
   }
 
@@ -934,6 +1172,98 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   }
 
   // =========================================================================
+  // AI chat
+  // =========================================================================
+
+  Future<void> _openAiChat() async {
+    if (_preparingAiChat) return;
+    _preparingAiChat = true;
+    var progressDialogVisible = false;
+
+    try {
+      var pdfContent = _cachedAiPdfContent;
+      if (pdfContent == null) {
+        progressDialogVisible = true;
+        unawaited(
+          showDialog<void>(
+            context: context,
+            barrierDismissible: false,
+            builder: (dialogContext) => PopScope(
+              canPop: false,
+              child: AlertDialog(
+                content: Row(
+                  children: [
+                    const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2.5),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Text(
+                        'Preparing PDF for AI chat…',
+                        style: TextStyle(
+                          color: AppColors.colorOf(
+                            dialogContext,
+                            'textPrimary',
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+
+        pdfContent = await PdfTextExtractionService.extractText(
+          widget.file.path,
+        );
+        _cachedAiPdfContent = pdfContent;
+      }
+
+      final chatPdfContent = pdfContent;
+      if (!mounted) return;
+      if (progressDialogVisible) {
+        Navigator.of(context, rootNavigator: true).pop();
+        progressDialogVisible = false;
+      }
+
+      // The chat receives already-extracted text, so its first frame is ready
+      // for input and never blocks while parsing the document.
+      unawaited(
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => ChatScreen(
+              pdfContent: chatPdfContent,
+              documentName: widget.file.name,
+            ),
+          ),
+        ),
+      );
+    } on PdfTextExtractionException catch (error) {
+      if (!mounted) return;
+      if (progressDialogVisible) {
+        Navigator.of(context, rootNavigator: true).pop();
+        progressDialogVisible = false;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.message),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } finally {
+      if (mounted && progressDialogVisible) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+      _preparingAiChat = false;
+    }
+  }
+
+  // =========================================================================
   // Bookmarks panel
   // =========================================================================
 
@@ -948,19 +1278,25 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   }
 
   void _showBookmarksPanel() {
-    if (_outlineNodes.isEmpty) {
+    final List<PdfOutlineNode> flat = [];
+    _flattenOutline(_outlineNodes, flat);
+    final bool hasUserBookmarks = _bookmarksForFile.isNotEmpty;
+    final bool hasOutline = flat.isNotEmpty;
+
+    // Nothing to show at all (no embedded outline AND no user bookmarks) →
+    // offer a helpful hint instead of a blank panel.
+    if (!hasUserBookmarks && !hasOutline) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('No bookmarks in this file'),
+          content: Text(
+            'No bookmarks yet — tap the bookmark icon while reading to save a page',
+          ),
           behavior: SnackBarBehavior.floating,
-          duration: Duration(seconds: 1),
+          duration: Duration(seconds: 2),
         ),
       );
       return;
     }
-
-    final List<PdfOutlineNode> flat = [];
-    _flattenOutline(_outlineNodes, flat);
 
     showModalBottomSheet(
       context: context,
@@ -1005,32 +1341,119 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
                 ),
                 Divider(height: 1, color: AppColors.colorOf(context, 'border')),
                 Expanded(
-                  child: ListView.builder(
+                  child: ListView(
                     controller: scrollController,
-                    itemCount: flat.length,
-                    itemBuilder: (BuildContext ctx, int index) {
-                      final PdfOutlineNode node = flat[index];
-                      return ListTile(
-                        leading: Icon(
-                          Icons.bookmark_outline,
-                          color: AppColors.colorOf(context, 'primary'),
-                          size: 20,
-                        ),
-                        title: Text(
-                          node.title,
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: AppColors.colorOf(context, 'textPrimary'),
+                    padding: const EdgeInsets.only(bottom: 16),
+                    children: [
+                      // -- Section 1: the user's own saved bookmarks --
+                      if (hasUserBookmarks) ...[
+                        _panelSectionHeader(context, 'Your bookmarks'),
+                        for (final PdfBookmark bookmark in List.of(
+                          _bookmarksForFile,
+                        )) ...[
+                          ListTile(
+                            leading: Icon(
+                              Icons.bookmark_rounded,
+                              color: AppColors.colorOf(context, 'primary'),
+                              size: 22,
+                            ),
+                            title: Text(
+                              bookmark.label?.isNotEmpty == true
+                                  ? bookmark.label!
+                                  : 'Page ${bookmark.pageNumber}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: bookmark.label?.isNotEmpty == true
+                                    ? FontWeight.w600
+                                    : FontWeight.w500,
+                                color: AppColors.colorOf(
+                                  context,
+                                  'textPrimary',
+                                ),
+                              ),
+                            ),
+                            subtitle: Text(
+                              bookmark.label?.isNotEmpty == true
+                                  ? 'Page ${bookmark.pageNumber}'
+                                  : 'Tap to open this page',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: AppColors.colorOf(context, 'textMuted'),
+                              ),
+                            ),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: Icon(
+                                    Icons.edit_outlined,
+                                    size: 18,
+                                    color: AppColors.colorOf(
+                                      context,
+                                      'textMuted',
+                                    ),
+                                  ),
+                                  tooltip: 'Edit label',
+                                  onPressed: () =>
+                                      _editBookmarkLabel(ctx, bookmark),
+                                ),
+                                IconButton(
+                                  icon: Icon(
+                                    Icons.delete_outline,
+                                    size: 20,
+                                    color: AppColors.colorOf(
+                                      context,
+                                      'brandRed',
+                                    ),
+                                  ),
+                                  tooltip: 'Remove bookmark',
+                                  onPressed: () =>
+                                      _removeBookmark(ctx, bookmark),
+                                ),
+                              ],
+                            ),
+                            onTap: () {
+                              Navigator.of(ctx).pop();
+                              _controller.goToPage(
+                                pageNumber: bookmark.pageNumber,
+                              );
+                            },
                           ),
-                        ),
-                        onTap: () {
-                          if (node.dest != null) {
-                            _controller.goToDest(node.dest);
-                          }
-                          Navigator.of(ctx).pop();
-                        },
-                      );
-                    },
+                        ],
+                      ],
+
+                      // -- Section 2: the PDF's embedded outline, if present --
+                      if (hasOutline) ...[
+                        _panelSectionHeader(context, 'Document outline'),
+                        for (final PdfOutlineNode node in flat) ...[
+                          ListTile(
+                            leading: Icon(
+                              Icons.menu_book_outlined,
+                              color: AppColors.colorOf(context, 'primary'),
+                              size: 20,
+                            ),
+                            title: Text(
+                              node.title,
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: AppColors.colorOf(
+                                  context,
+                                  'textPrimary',
+                                ),
+                              ),
+                            ),
+                            onTap: () {
+                              if (node.dest != null) {
+                                _controller.goToDest(node.dest);
+                              }
+                              Navigator.of(ctx).pop();
+                            },
+                          ),
+                        ],
+                      ],
+                    ],
                   ),
                 ),
               ],
@@ -1040,6 +1463,162 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
       },
     );
   }
+
+  /// Section header row inside the bookmarks panel.
+  Widget _panelSectionHeader(BuildContext context, String title) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+      child: Text(
+        title,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.6,
+          color: AppColors.colorOf(context, 'textMuted'),
+        ),
+      ),
+    );
+  }
+
+  /// Remove a user bookmark from the panel, after a quick confirmation.
+  Future<void> _removeBookmark(
+    BuildContext panelContext,
+    PdfBookmark bookmark,
+  ) async {
+    final bool confirmed = await showConfirmDialog(
+      panelContext,
+      title: 'Remove bookmark?',
+      message:
+          'Remove the bookmark on page ${bookmark.pageNumber}? The PDF file '
+          'itself is not modified.',
+      confirmLabel: 'Remove',
+    );
+    if (!confirmed || !mounted) return;
+    await context.read<BookmarksProvider>().removeBookmark(bookmark.id);
+  }
+
+  /// Edit (or clear) the optional label on a user bookmark.
+  Future<void> _editBookmarkLabel(
+    BuildContext panelContext,
+    PdfBookmark bookmark,
+  ) async {
+    final TextEditingController controller = TextEditingController(
+      text: bookmark.label ?? '',
+    );
+    final String? result = await showDialog<String>(
+      context: panelContext,
+      builder: (BuildContext ctx) {
+        return AlertDialog(
+          backgroundColor: AppColors.colorOf(ctx, 'surface'),
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: Text(
+            'Bookmark label',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: AppColors.colorOf(ctx, 'textPrimary'),
+            ),
+          ),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            maxLines: 2,
+            style: TextStyle(
+              fontSize: 14,
+              color: AppColors.colorOf(ctx, 'textPrimary'),
+            ),
+            decoration: InputDecoration(
+              hintText: 'e.g. Chapter 3 recap',
+              hintStyle: TextStyle(color: AppColors.colorOf(ctx, 'textMuted')),
+              filled: true,
+              fillColor: AppColors.colorOf(ctx, 'inputFill'),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide.none,
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: Text(
+                'Cancel',
+                style: TextStyle(
+                  color: AppColors.colorOf(ctx, 'textSecondary'),
+                ),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(controller.text),
+              child: Text(
+                'Save',
+                style: TextStyle(
+                  color: AppColors.colorOf(ctx, 'primary'),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    controller.dispose();
+    if (result == null || !mounted) return;
+    final String? trimmed = result.trim().isEmpty ? null : result.trim();
+    await context.read<BookmarksProvider>().updateBookmarkLabel(
+      bookmark.id,
+      trimmed,
+    );
+  }
+
+  /// Toggle a user bookmark on the currently visible page.
+  ///
+  /// Tapping the app-bar ribbon icon adds a bookmark for [_currentPage] (icon
+  /// fills) or removes it again (icon empties). Persisted through
+  /// [BookmarksProvider], exactly like highlight annotations.
+  Future<void> _toggleBookmarkForCurrentPage() async {
+    final provider = context.read<BookmarksProvider>();
+    final PdfBookmark? existing = provider.bookmarkOn(
+      widget.file.path,
+      _currentPage,
+    );
+    if (existing != null) {
+      await provider.removeBookmark(existing.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Bookmark removed from page $_currentPage'),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 1),
+        ),
+      );
+    } else {
+      await provider.addBookmark(
+        PdfBookmark(
+          id: '${DateTime.now().microsecondsSinceEpoch}',
+          filePath: widget.file.path,
+          pageNumber: _currentPage,
+          createdAt: DateTime.now(),
+        ),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Page $_currentPage bookmarked'),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 1),
+        ),
+      );
+    }
+  }
+
+  /// Whether the currently visible page already has a user bookmark (drives
+  /// the filled-vs-outline state of the app-bar ribbon icon).
+  bool get _isCurrentPageBookmarked =>
+      _bookmarksForFile.any((b) => b.pageNumber == _currentPage);
 
   // =========================================================================
   // Highlight annotations
@@ -1200,6 +1779,10 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
         createdAt: DateTime.now().toIso8601String(),
         textSnippet: _cleanTextSnippet(range.text),
         note: note.trim().isEmpty ? null : note.trim(),
+      );
+      // DIAGNOSTIC: confirm the picked color reaches the save path.
+      debugPrint(
+        '[Annotations] SAVE annotation ${annotation.id} → colorHex=${annotation.colorHex}',
       );
       await context.read<AnnotationsProvider>().addAnnotation(annotation);
       if (!mounted) return;
@@ -1368,16 +1951,43 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
                               color: AppColors.colorOf(context, 'textMuted'),
                             ),
                           ),
-                          trailing: annotation.hasNote
-                              ? Icon(
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (annotation.hasNote)
+                                Icon(
                                   Icons.sticky_note_2_outlined,
                                   size: 18,
                                   color: AppColors.colorOf(
                                     context,
                                     'textMuted',
                                   ),
-                                )
-                              : null,
+                                ),
+                              if (annotation.hasNote) const SizedBox(width: 8),
+                              GestureDetector(
+                                onTap: () async {
+                                  final bool confirmed =
+                                      await showConfirmDialog(
+                                        ctx,
+                                        title: 'Remove highlight?',
+                                        message: 'This removes the highlight. The PDF file itself is not modified.',
+                                        confirmLabel: 'Remove',
+                                      );
+                                  if (confirmed && mounted) {
+                                    context
+                                        .read<AnnotationsProvider>()
+                                        .removeAnnotation(annotation.id);
+                                    if (ctx.mounted) Navigator.of(ctx).pop();
+                                  }
+                                },
+                                child: Icon(
+                                  Icons.delete_outline,
+                                  size: 20,
+                                  color: AppColors.colorOf(context, 'brandRed'),
+                                ),
+                              ),
+                            ],
+                          ),
                           onTap: () {
                             Navigator.of(ctx).pop();
                             _controller.goToPage(
@@ -1413,7 +2023,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         centerTitle: false,
-        titleSpacing: MediaQuery.sizeOf(context).width < 420 ? 0 : 16,
+        titleSpacing: 0,
         title: _buildTopBar(context, nightMode: nightMode),
       ),
 
@@ -1422,63 +2032,30 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
           // -- Search bar (only visible when _searchActive is true) --
           if (_searchActive) _buildSearchBar(),
 
-          // -- PDF viewer (fills remaining space) --
+          // -- PDF viewer (fills remaining space) + bottom action row --
           Expanded(
-            child: RepaintBoundary(
-              // Night mode wraps ALL page rendering in the soft warm
-              // night filter (pages + pdfrx selection/search highlights).
-              // Our own overlays are individually pre-compensated with the
-              // filter's inverse in the page-overlays builder so annotation
-              // colors survive unchanged.
-              child: nightMode
-                  ? NightMode.wrap(
-                      PdfViewer.file(
-                        widget.file.path,
-                        key: ValueKey(widget.file.path),
-                        controller: _controller,
-                        initialPageNumber: _currentPage,
-                        params: PdfViewerParams(
-                          textSelectionParams: _textSelectionParams,
-                          buildContextMenu: _buildSelectionContextMenu,
-                          pageOverlaysBuilder: _pageOverlays,
-                          margin: 0,
-                          pageDropShadow: null,
-                          layoutPages: _useSinglePageLayout
-                              ? _pagedLayout
-                              : null,
-                          onViewSizeChanged: _onViewSizeChanged,
-                          pagePaintCallbacks: [
-                            if (_textSearcher != null)
-                              _textSearcher!.pageTextMatchPaintCallback,
-                          ],
-                          onPageChanged: _onPageChanged,
-                          onDocumentLoadFinished: _onDocLoadFinished,
-                          onViewerReady: _onViewerReady,
-                        ),
-                      ),
-                    )
-                  : PdfViewer.file(
-                      widget.file.path,
-                      key: ValueKey(widget.file.path),
-                      controller: _controller,
-                      initialPageNumber: _currentPage,
-                      params: PdfViewerParams(
-                        textSelectionParams: _textSelectionParams,
-                        buildContextMenu: _buildSelectionContextMenu,
-                        pageOverlaysBuilder: _pageOverlays,
-                        margin: 0,
-                        pageDropShadow: null,
-                        layoutPages: _useSinglePageLayout ? _pagedLayout : null,
-                        onViewSizeChanged: _onViewSizeChanged,
-                        pagePaintCallbacks: [
-                          if (_textSearcher != null)
-                            _textSearcher!.pageTextMatchPaintCallback,
-                        ],
-                        onPageChanged: _onPageChanged,
-                        onDocumentLoadFinished: _onDocLoadFinished,
-                        onViewerReady: _onViewerReady,
-                      ),
-                    ),
+            child: Stack(
+              children: [
+                RepaintBoundary(
+                  // Night mode wraps ALL page rendering in the soft warm
+                  // night filter (pages + pdfrx selection/search highlights).
+                  // Our own overlays are individually pre-compensated with the
+                  // filter's inverse in the page-overlays builder so annotation
+                  // colors survive unchanged.
+                  child: nightMode
+                      ? NightMode.wrap(_buildPdfViewer())
+                      : _buildPdfViewer(),
+                ),
+                // Bottom-of-viewer action row, deliberately OUTSIDE the night
+                // filter so its dark chrome keeps its authored colors in both
+                // light and night mode.
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: _buildBottomActionBar(context),
+                ),
+              ],
             ),
           ),
         ],
@@ -1497,49 +2074,22 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     await context.read<SettingsProvider>().toggleNightMode();
   }
 
-  /// Responsive top toolbar. The filename (`Expanded` + ellipsis) absorbs the
-  /// leftover width, so trailing controls never get squeezed out — instead
-  /// they tier down on narrow screens before anything collides or overflows:
+  /// Simplified top bar: back button (auto-appended by the AppBar), filename
+  /// on the left (ellipsizes first), a compact "current / total" page pill,
+  /// and an overflow menu on the right holding the less-frequent actions
+  /// (jump-to-page, bookmarks/outline, annotations, share, night mode).
   ///
-  ///   ≥500 : search · night · zoom− · NN% · zoom+ · share · [N/N] · ⋮
-  ///   420–499: same, minus Share (moved into the ⋮ menu)
-  ///   <420 : minus Share and the zoom-% label (shown inert in the ⋮ menu);
-  ///          icons drop to 40×48 glyph hits with 20px icons, the page badge
-  ///          pad/font shrink; the back button and filename stay as-is.
-  ///
-  /// Every control keeps at least a 40×48dp touch target (48×48 on regular
-  /// widths). "999 / 1000"-style badges fit by construction at every tier
-  /// because the indicator is a compact pill with its own padding.
+  /// The pill carries its own padding, so 3-digit page counts ("128 / 999")
+  /// never crowd the menu even on narrow screens.
   Widget _buildTopBar(BuildContext context, {required bool nightMode}) {
-    final double width = MediaQuery.sizeOf(context).width;
-    final bool compact = width < 420;
-    final bool hideShare = width < 500;
-
     final Color iconColor = AppColors.colorOf(context, 'textSecondary');
-    final Color accentColor = AppColors.colorOf(context, 'primary');
-    final double iconSize = compact ? 20 : 22;
-    final BoxConstraints tapConstraints = compact
-        ? const BoxConstraints(minWidth: 40, minHeight: 48)
-        : const BoxConstraints(minWidth: 48, minHeight: 48);
-
-    // Standard icon button with a consistent (≥40×48) touch target.
-    Widget iconButton(IconData icon, VoidCallback? onPressed, String tooltip) {
-      return IconButton(
-        icon: Icon(icon, size: iconSize, color: iconColor),
-        onPressed: onPressed,
-        tooltip: tooltip,
-        padding: EdgeInsets.zero,
-        constraints: tapConstraints,
-      );
-    }
 
     return Row(
       children: [
-        // Filename takes ALL leftover width so controls never overflow —
-        // it ellipsizes first, long before the row can collide.
+        // Filename absorbs all leftover width so the pill/menu never collide.
         Expanded(
           child: Padding(
-            padding: const EdgeInsets.only(right: 4),
+            padding: const EdgeInsets.only(left: 16, right: 8),
             child: Text(
               widget.file.name,
               maxLines: 1,
@@ -1553,68 +2103,12 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
           ),
         ),
 
-        // -- Night Mode quick toggle (always visible) --
-        IconButton(
-          icon: Icon(
-            nightMode ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
-            size: iconSize,
-            color: nightMode ? accentColor : iconColor,
-          ),
-          onPressed: _toggleNightMode,
-          tooltip: nightMode ? 'Turn off night mode' : 'Turn on night mode',
-          padding: EdgeInsets.zero,
-          constraints: tapConstraints,
-        ),
-
-        // -- Search --
-        iconButton(
-          _searchActive ? Icons.close : Icons.search,
-          _searchActive ? _closeSearch : _openSearch,
-          'Search',
-        ),
-
-        // -- Zoom out --
-        iconButton(Icons.remove_circle_outline, _zoomOut, 'Zoom out'),
-
-        // -- Zoom level label (only this widget rebuilds on zoom change).
-        //    Hidden on very narrow screens (see compaction rules above). --
-        if (!compact)
-          ValueListenableBuilder<double>(
-            valueListenable: _zoomNotifier,
-            builder: (context, zoom, _) {
-              return Center(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 2),
-                  child: Text(
-                    '${(zoom * 100).round()}%',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.colorOf(context, 'textSecondary'),
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-
-        // -- Zoom in --
-        iconButton(Icons.add_circle_outline, _zoomIn, 'Zoom in'),
-
-        // -- Share (moved to the ⋮ menu on narrow screens) --
-        if (!hideShare)
-          iconButton(Icons.share_outlined, _shareFile, 'Share file'),
-
-        // -- Page indicator badge --
+        // -- Compact "current / total" page-count pill --
         Center(
           child: Container(
-            margin: const EdgeInsets.only(right: 4),
-            padding: EdgeInsets.symmetric(
-              horizontal: compact ? 7 : 10,
-              vertical: 4,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             decoration: BoxDecoration(
-              color: AppColors.colorOf(context, 'inputFill'),
+              color: AppColors.colorOf(context, 'secondarySurface'),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Text(
@@ -1622,147 +2116,303 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
                   ? '$_currentPage / $_totalPages'
                   : '$_currentPage',
               style: TextStyle(
-                fontSize: compact ? 11 : 12,
+                fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: AppColors.colorOf(context, 'textSecondary'),
+                color: AppColors.colorOf(context, 'textPrimary'),
               ),
             ),
           ),
         ),
+        const SizedBox(width: 4),
 
-        // -- Overflow menu: dynamic entries + jump-to-page & bookmarks --
+        // -- Overflow menu: the less-frequent viewer actions --
         PopupMenuButton<String>(
-          icon: Icon(Icons.more_vert, size: iconSize, color: iconColor),
+          icon: const Icon(Icons.more_vert, size: 22),
+          iconColor: iconColor,
           color: AppColors.colorOf(context, 'surface'),
-          padding: EdgeInsets.zero,
-          constraints: tapConstraints,
           tooltip: 'More options',
           onSelected: (String value) {
             switch (value) {
-              case 'search':
-                if (_searchActive) {
-                  _closeSearch();
-                } else {
-                  _openSearch();
-                }
-              case 'share':
-                _shareFile();
               case 'jump':
                 _showJumpToPageDialog();
+                break;
               case 'bookmarks':
                 _showBookmarksPanel();
+                break;
               case 'annotations':
                 _showAnnotationsPanel();
+                break;
+              case 'chat':
+                _openAiChat();
+                break;
+              case 'share':
+                _shareFile();
+                break;
+              case 'night':
+                _toggleNightMode();
+                break;
             }
           },
           itemBuilder: (BuildContext ctx) => <PopupMenuEntry<String>>[
-            // Live zoom readout shown only when the bar dropped the label.
-            if (compact)
-              PopupMenuItem<String>(
-                value: 'zoom-readout',
-                enabled: false,
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.zoom_out_map,
-                      size: 20,
-                      color: AppColors.colorOf(context, 'textMuted'),
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      'Zoom: ${(_zoomNotifier.value * 100).round()}%',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: AppColors.colorOf(context, 'textMuted'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            if (hideShare)
-              PopupMenuItem<String>(
-                value: 'share',
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.share_outlined,
-                      size: 20,
-                      color: AppColors.colorOf(context, 'textSecondary'),
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      'Share file',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: AppColors.colorOf(context, 'textPrimary'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+            // Live zoom readout (informational — the % label is no longer
+            // drawn on the toolbar itself).
             PopupMenuItem<String>(
+              value: 'zoom-readout',
+              enabled: false,
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.zoom_out_map,
+                    size: 20,
+                    color: AppColors.colorOf(ctx, 'textMuted'),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Zoom: ${(_zoomNotifier.value * 100).round()}%',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: AppColors.colorOf(ctx, 'textMuted'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            _menuItem(
+              ctx,
               value: 'jump',
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.numbers,
-                    size: 20,
-                    color: AppColors.colorOf(context, 'textSecondary'),
-                  ),
-                  const SizedBox(width: 12),
-                  Text(
-                    'Jump to page',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: AppColors.colorOf(context, 'textPrimary'),
-                    ),
-                  ),
-                ],
-              ),
+              icon: Icons.numbers,
+              label: 'Jump to page',
             ),
-            PopupMenuItem<String>(
+            _menuItem(
+              ctx,
               value: 'bookmarks',
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.bookmark_outline,
-                    size: 20,
-                    color: AppColors.colorOf(context, 'textSecondary'),
-                  ),
-                  const SizedBox(width: 12),
-                  Text(
-                    'Bookmarks',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: AppColors.colorOf(context, 'textPrimary'),
-                    ),
-                  ),
-                ],
-              ),
+              icon: Icons.bookmark_outline,
+              label: 'Bookmarks',
             ),
-            PopupMenuItem<String>(
+            _menuItem(
+              ctx,
               value: 'annotations',
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.highlight_alt,
-                    size: 20,
-                    color: AppColors.colorOf(context, 'textSecondary'),
-                  ),
-                  const SizedBox(width: 12),
-                  Text(
-                    'Annotations',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: AppColors.colorOf(context, 'textPrimary'),
-                    ),
-                  ),
-                ],
-              ),
+              icon: Icons.highlight_alt,
+              label: 'Annotations',
+            ),
+            _menuItem(
+              ctx,
+              value: 'chat',
+              icon: Icons.auto_awesome_outlined,
+              label: 'Chat with AI',
+            ),
+            _menuItem(
+              ctx,
+              value: 'share',
+              icon: Icons.share_outlined,
+              label: 'Share file',
+            ),
+            _menuItem(
+              ctx,
+              value: 'night',
+              icon: nightMode
+                  ? Icons.light_mode_outlined
+                  : Icons.nightlight_outlined,
+              label: nightMode ? 'Turn off night mode' : 'Turn on night mode',
             ),
           ],
         ),
       ],
+    );
+  }
+
+  /// Standard row item for the overflow menu.
+  PopupMenuItem<String> _menuItem(
+    BuildContext ctx, {
+    required String value,
+    required IconData icon,
+    required String label,
+  }) {
+    return PopupMenuItem<String>(
+      value: value,
+      child: Row(
+        children: [
+          Icon(icon, size: 20, color: AppColors.colorOf(ctx, 'textSecondary')),
+          const SizedBox(width: 12),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 14,
+              color: AppColors.colorOf(ctx, 'textPrimary'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Bottom-of-viewer action row, floating over the page content on a
+  /// semi-transparent dark chrome so it stays legible against any page.
+  ///
+  /// Five evenly-weighted slots — search · zoom− · highlight · zoom+ ·
+  /// bookmark — each backed by an [Expanded] cell, so slots always share the
+  /// width equally no matter how narrow the screen gets. That makes the
+  /// earlier icon-collision bug structurally impossible, and 3-digit page
+  /// counts live in the top pill (see [_buildTopBar]) where they can't crowd
+  /// the controls.
+  Widget _buildBottomActionBar(BuildContext context) {
+    final Color accentColor = AppColors.colorOf(context, 'primary');
+    final Color barIcon = Colors.white.withValues(alpha: 0.92);
+    final Color bookmarkGold = const Color(0xFFF6B93B);
+    final bool bookmarked = _isCurrentPageBookmarked;
+
+    Widget action(
+      IconData icon, {
+      required VoidCallback? onPressed,
+      required String tooltip,
+      Color? color,
+    }) {
+      return Expanded(
+        child: Center(
+          child: IconButton(
+            icon: Icon(icon, size: 24, color: color ?? barIcon),
+            onPressed: onPressed,
+            tooltip: tooltip,
+            color: color ?? barIcon,
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(30),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.28),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            // -- Search (or close when the search bar is showing) --
+            action(
+              _searchActive ? Icons.close_rounded : Icons.search_rounded,
+              onPressed: _searchActive ? _closeSearch : _openSearch,
+              tooltip: _searchActive ? 'Close search' : 'Search in document',
+            ),
+
+            // -- Zoom out --
+            action(
+              Icons.remove_circle_outline_rounded,
+              onPressed: _zoomOut,
+              tooltip: 'Zoom out',
+            ),
+
+            // -- Highlight / annotation hub — the toolbar's focal point. With
+            //    an active text selection it opens the highlight-creator sheet;
+            //    with no selection it opens the Annotations panel. --
+            Expanded(
+              child: Center(
+                child: Semantics(
+                  button: true,
+                  label: 'Highlights and annotations',
+                  child: GestureDetector(
+                    onTap: _onHighlightPressed,
+                    child: Container(
+                      width: 54,
+                      height: 54,
+                      decoration: BoxDecoration(
+                        color: accentColor,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.25),
+                          width: 2,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: accentColor.withValues(alpha: 0.45),
+                            blurRadius: 14,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: const Icon(
+                        Icons.border_color_rounded,
+                        color: Colors.white,
+                        size: 26,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            // -- Zoom in --
+            action(
+              Icons.add_circle_outline_rounded,
+              onPressed: _zoomIn,
+              tooltip: 'Zoom in',
+            ),
+
+            // -- Bookmark current page (filled gold = saved; saves/removes the
+            //    user-created bookmark via the bookmarks provider) --
+            action(
+              bookmarked
+                  ? Icons.bookmark_rounded
+                  : Icons.bookmark_border_rounded,
+              onPressed: _toggleBookmarkForCurrentPage,
+              tooltip: bookmarked
+                  ? 'Remove bookmark from this page'
+                  : 'Bookmark this page',
+              color: bookmarked ? bookmarkGold : null,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// The highlight/annotation hub action behind the circular accent button.
+  /// Preserves both existing paths: create a highlight from the current text
+  /// selection, or open the Annotations panel when nothing is selected.
+  void _onHighlightPressed() {
+    if (!_controller.isReady) return;
+    final PdfTextSelectionDelegate delegate = _controller.textSelectionDelegate;
+    if (delegate.hasSelectedText) {
+      _showHighlightCreationSheet(delegate);
+    } else {
+      _showAnnotationsPanel();
+    }
+  }
+
+  /// Builds the [PdfViewer.file] widget with all of its existing params.
+  ///
+  /// Extracted so both light and night paths share a single construction
+  /// (the night filter only changes the wrapper, never the viewer itself).
+  Widget _buildPdfViewer() {
+    return PdfViewer.file(
+      widget.file.path,
+      key: ValueKey(widget.file.path),
+      controller: _controller,
+      initialPageNumber: _currentPage,
+      params: PdfViewerParams(
+        textSelectionParams: _textSelectionParams,
+        buildContextMenu: _buildSelectionContextMenu,
+        pageOverlaysBuilder: _pageOverlays,
+        margin: 0,
+        pageDropShadow: null,
+        layoutPages: _useSinglePageLayout ? _pagedLayout : null,
+        onViewSizeChanged: _onViewSizeChanged,
+        pagePaintCallbacks: [
+          if (_textSearcher != null) _textSearcher!.pageTextMatchPaintCallback,
+        ],
+        onPageChanged: _onPageChanged,
+        onDocumentLoadFinished: _onDocLoadFinished,
+        onViewerReady: _onViewerReady,
+      ),
     );
   }
 

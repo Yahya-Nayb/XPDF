@@ -14,32 +14,54 @@ Future<void> showMoveToFolderSheet(
   BuildContext context,
   RecentFile file,
 ) {
-  return showModalBottomSheet(
+  return showModalBottomSheet<void>(
     context: context,
     backgroundColor: AppColors.colorOf(context, 'surface'),
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
-    builder: (_) => MoveToFolderSheet(file: file),
+    builder: (_) => _FolderListSheet(
+      title: 'Move to folder',
+      subtitle: file.name,
+      selectedFolderId: file.folderId,
+      onSelect: (folderId, label) =>
+          _moveToFolder(context, file, folderId, label),
+    ),
   );
 }
 
-class MoveToFolderSheet extends StatelessWidget {
-  final RecentFile file;
-  const MoveToFolderSheet({super.key, required this.file});
+void _moveToFolder(
+  BuildContext context,
+  RecentFile file,
+  String? folderId,
+  String label,
+) {
+  context.read<RecentFilesProvider>().assignToFolder(file.path, folderId);
+  Navigator.pop(context);
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Moved to "$label"'),
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 2),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    ),
+  );
+}
 
-  void _select(BuildContext context, String? folderId, String label) {
-    context.read<RecentFilesProvider>().assignToFolder(file.path, folderId);
-    Navigator.pop(context);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Moved to "$label"'),
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      ),
-    );
-  }
+/// Shared folder-list sheet rendered by both the move-to-folder and the
+/// folder-picker entry points.
+class _FolderListSheet extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+  final String? selectedFolderId;
+  final void Function(String? folderId, String label) onSelect;
+
+  const _FolderListSheet({
+    required this.title,
+    this.subtitle,
+    this.selectedFolderId,
+    required this.onSelect,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -53,23 +75,25 @@ class MoveToFolderSheet extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Move to folder',
+              title,
               style: TextStyle(
                 fontSize: 17,
                 fontWeight: FontWeight.w700,
                 color: AppColors.colorOf(context, 'textPrimary'),
               ),
             ),
-            const SizedBox(height: 4),
-            Text(
-              file.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 13,
-                color: AppColors.colorOf(context, 'textMuted'),
+            if (subtitle != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                subtitle!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: AppColors.colorOf(context, 'textMuted'),
+                ),
               ),
-            ),
+            ],
             const SizedBox(height: 14),
 
             // Uncategorized pseudo-folder first.
@@ -78,8 +102,8 @@ class MoveToFolderSheet extends StatelessWidget {
               icon: Icons.folder_off_rounded,
               color: AppColors.colorOf(context, 'textMuted'),
               name: 'Uncategorized',
-              isSelected: file.folderId == null,
-              onTap: () => _select(context, null, 'Uncategorized'),
+              isSelected: selectedFolderId == null,
+              onTap: () => onSelect(null, 'Uncategorized'),
             ),
 
             // Then one tile per folder.
@@ -89,8 +113,8 @@ class MoveToFolderSheet extends StatelessWidget {
                 icon: Icons.folder_rounded,
                 color: folder.color,
                 name: folder.name,
-                isSelected: file.folderId == folder.id,
-                onTap: () => _select(context, folder.id, folder.name),
+                isSelected: selectedFolderId == folder.id,
+                onTap: () => onSelect(folder.id, folder.name),
               ),
             ),
 

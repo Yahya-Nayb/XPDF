@@ -1,85 +1,9 @@
+/// Backward-compatible export — prefer `theme/app_colors.dart` in new code.
+library;
+
+export 'theme/app_colors.dart';
+
 import 'package:flutter/material.dart';
-
-/// Folia's exact color palette.
-///
-/// Light and dark palettes are exposed via [light] and [dark] getters.
-/// Every widget should read colors through `AppColors.light.xxx` or
-/// `AppColors.dark.xxx` (or via the theme helper) instead of using
-/// a single hardcoded set.
-class AppColors {
-  AppColors._(); // prevent instantiation
-
-  // ---------------------------------------------------------------------------
-  // Light palette (the original Folia colors)
-  // ---------------------------------------------------------------------------
-
-  static const Color background = Color(0xFFF7F7F8);
-  static const Color surface = Color(0xFFFFFFFF);
-  static const Color card = Color(0xFFFFFFFF);
-  static const Color inputFill = Color(0xFFF0F0F2);
-  static const Color primary = Color(0xFF3A7BD5);
-  static const Color pdfBadgeBg = Color(0xFFFDECEC);
-  static const Color pdfIcon = Color(0xFFE0473C);
-  static const Color brandRed = Color(0xFFFC3A34);
-  static const Color textPrimary = Color(0xFF111111);
-  static const Color textSecondary = Color(0xFF555558);
-  static const Color textMuted = Color(0xFF8A8A8E);
-  static const Color border = Color(0xFFE8E8EC);
-
-  // ---------------------------------------------------------------------------
-  // Dark palette
-  // ---------------------------------------------------------------------------
-
-  static const Color darkBackground = Color(0xFF121212);
-  static const Color darkSurface = Color(0xFF1E1E1E);
-  static const Color darkCard = Color(0xFF252525);
-  static const Color darkInputFill = Color(0xFF2C2C2E);
-  static const Color darkPrimary = Color(0xFF5B9FE6);
-  static const Color darkPdfBadgeBg = Color(0xFF3D2020);
-  static const Color darkPdfIcon = Color(0xFFE0605A);
-  static const Color darkTextPrimary = Color(0xFFF0F0F0);
-  static const Color darkTextSecondary = Color(0xFFA0A0A4);
-  static const Color darkTextMuted = Color(0xFF6B6B6F);
-  static const Color darkBorder = Color(0xFF3A3A3C);
-
-  /// Returns the theme-appropriate variant of [name].
-  ///
-  /// Usage in widgets:
-  /// ```dart
-  /// backgroundColor: AppColors.colorOf(context, 'background'),
-  /// ```
-  static Color colorOf(BuildContext context, String name) {
-    final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    switch (name) {
-      case 'background':
-        return isDark ? darkBackground : background;
-      case 'surface':
-        return isDark ? darkSurface : surface;
-      case 'card':
-        return isDark ? darkCard : card;
-      case 'inputFill':
-        return isDark ? darkInputFill : inputFill;
-      case 'primary':
-        return isDark ? darkPrimary : primary;
-      case 'pdfBadgeBg':
-        return isDark ? darkPdfBadgeBg : pdfBadgeBg;
-      case 'pdfIcon':
-        return isDark ? darkPdfIcon : pdfIcon;
-      case 'brandRed':
-        return brandRed;
-      case 'textPrimary':
-        return isDark ? darkTextPrimary : textPrimary;
-      case 'textSecondary':
-        return isDark ? darkTextSecondary : textSecondary;
-      case 'textMuted':
-        return isDark ? darkTextMuted : textMuted;
-      case 'border':
-        return isDark ? darkBorder : border;
-      default:
-        return isDark ? darkBackground : background;
-    }
-  }
-}
 
 /// Night-mode page rendering: a "comfortable reading" color filter that turns
 /// white PDF pages into a warm dark gray (≈#221e16) and black ink into warm
@@ -126,47 +50,30 @@ class AppColors {
 /// lands on the nearest representable warm white ≈#e9e5dd, which reads as a
 /// soft light surface rather than an error).
 class NightMode {
-  NightMode._(); // prevent instantiation
+  NightMode._();
 
-  /// 4×5 ColorFilter.matrix for the single-pass night filter `F = W∘S∘C∘I`
-  /// above. Linear entries act on 0..1 color components; offsets use Flutter's
-  /// 0..255 convention (internally divided by 255). Alpha is untouched.
   static const List<double> nightMatrix = <double>[
-    0.1495, -0.7784, -0.1512, 0, 232.950, // R'
-    -0.3965, -0.2324, -0.1512, 0, 228.950, // G'
-    -0.3965, -0.7784, 0.3948, 0, 220.950, // B'
-    0, 0, 0, 1, 0, // A'
+    0.1495, -0.7784, -0.1512, 0, 232.950,
+    -0.3965, -0.2324, -0.1512, 0, 228.950,
+    -0.3965, -0.7784, 0.3948, 0, 220.950,
+    0, 0, 0, 1, 0,
   ];
 
-  /// Exact affine inverse of [nightMatrix] (`A_G = A_F⁻¹`, `b_G = −A_G·b_F`)
-  /// used to pre-compensate OUR overlay widgets so that, once the viewer-wide
-  /// [nightMatrix] is applied over them, they net back to their authored
-  /// colors. See the class docs for the (small, bounded) gamut caveats.
   static const List<double> compensationMatrix = <double>[
-    0.9005, -1.8277, -0.3549, 0, 287.084, // R'
-    -0.9310, 0.0038, -0.3549, 0, 294.410, // G'
-    -0.9310, -1.8277, 1.4766, 0, 309.062, // B'
-    0, 0, 0, 1, 0, // A'
+    0.9005, -1.8277, -0.3549, 0, 287.084,
+    -0.9310, 0.0038, -0.3549, 0, 294.410,
+    -0.9310, -1.8277, 1.4766, 0, 309.062,
+    0, 0, 0, 1, 0,
   ];
 
-  /// The night [ColorFilter], constructed from [nightMatrix].
   static ColorFilter get colorFilter => ColorFilter.matrix(nightMatrix);
 
-  /// The overlay compensation [ColorFilter], constructed from
-  /// [compensationMatrix].
   static ColorFilter get compensationColorFilter =>
       ColorFilter.matrix(compensationMatrix);
 
-  /// Wraps the page canvas subtree so every rasterized PDF page pixel is
-  /// night-rendered. Our app-level overlays live inside [child] and must be
-  /// individually pre-compensated with [counterWrap] so they are not darkened
-  /// along with the pages.
   static Widget wrap(Widget child) =>
       ColorFiltered(colorFilter: colorFilter, child: child);
 
-  /// Pre-compensates one of OUR overlay widgets with the inverse of the night
-  /// filter. After the outer [wrap] filter is applied, `F(G(c)) ≈ c` restores
-  /// the authored color, while the page around it stays night-rendered.
   static Widget counterWrap(Widget child) =>
       ColorFiltered(colorFilter: compensationColorFilter, child: child);
 }

@@ -135,6 +135,32 @@ class _UrlImportDialogState extends State<UrlImportDialog> {
               ),
             ),
 
+            // The one behaviour that actually touches the network — a short,
+            // friendly heads-up that everything else in the app is offline.
+            const SizedBox(height: 8),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  Icons.lock_outline_rounded,
+                  size: 14,
+                  color: AppColors.colorOf(context, 'textMuted'),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'This is the only feature that uses the internet — '
+                    'everything else works fully offline.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      height: 1.35,
+                      color: AppColors.colorOf(context, 'textMuted'),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
             // Soft validation warning — doesn't block download.
             if (_showNotPdfWarning && !_downloading) ...[
               const SizedBox(height: 8),

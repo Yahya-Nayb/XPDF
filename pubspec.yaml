@@ -1,4 +1,4 @@
-name: folia
+name: xpdf
 description: "XPDF - Open, read, and manage your PDF files."
 publish_to: 'none'
 version: 1.0.0+1
@@ -49,10 +49,21 @@ dependencies:
 
   # Read the app version dynamically for the About section
   package_info_plus: ^10.2.1
-  google_fonts: ^8.2.1
 
   # Receive PDFs opened via Android's "Open with" / share sheet (ACTION_VIEW)
   receive_sharing_intent: ^1.9.0
+  pdf_manipulator: ^4.2.0
+  url_launcher: ^6.3.2
+
+  # Extract selectable text from all pages before sending PDF context to AI.
+  syncfusion_flutter_pdf: ^34.2.7
+
+  # Gemini client requested for the PDF chat feature. This SDK is deprecated
+  # upstream; see GeminiService for the migration note and current model name.
+  google_generative_ai: ^0.4.7
+
+  # Loads the local development API key from the ignored .env asset.
+  flutter_dotenv: ^6.0.1
 
 dev_dependencies:
   flutter_test:
@@ -60,9 +71,29 @@ dev_dependencies:
 
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.4
+  flutter_native_splash: ^2.4.8
 
 flutter:
   uses-material-design: true
+
+  # Caveat (SIL Open Font License 1.1) is bundled as a local asset rather than
+  # fetched through google_fonts. XPDF is offline-first, so a runtime font
+  # download would fail — or silently fall back to the system face — on first
+  # launch with no network. The two files are static instances cut from the
+  # upstream variable font, so plain `fontWeight` selects the face and no
+  # `fontVariations` support is needed. The license ships in assets/fonts.
+  fonts:
+    - family: Caveat
+      fonts:
+        - asset: assets/fonts/Caveat-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Caveat-Bold.ttf
+          weight: 700
+
+  assets:
+    - assets/images/
+    - assets/fonts/OFL.txt
+    - .env
 
 flutter_launcher_icons:
   android: true
@@ -72,3 +103,25 @@ flutter_launcher_icons:
   min_sdk_android: 24
   adaptive_icon_background: "#FFFFFF"
   adaptive_icon_foreground: "lib/assets/icon/app_icon.png"
+
+# Generates the launch screen shown by Android and iOS before Flutter draws
+# its first frame. One fixed dark background avoids a light/dark flash when
+# the saved in-app theme differs from the device theme.
+flutter_native_splash:
+  android: true
+  ios: true
+  web: false
+  color: "#0E0E10"
+  color_dark: "#0E0E10"
+  image: assets/images/logo.png
+  image_dark: assets/images/logo.png
+  android_gravity: center
+  ios_content_mode: center
+
+  # Use the same 1152px transparent canvas on Android 12+. At 4x density it
+  # matches the 288 logical-pixel canvas used by Flutter, Android, and iOS.
+  android_12:
+    color: "#0E0E10"
+    color_dark: "#0E0E10"
+    image: assets/images/logo.png
+    image_dark: assets/images/logo.png

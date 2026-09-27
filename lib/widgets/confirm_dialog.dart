@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../colors.dart';
 
-/// Reusable confirmation dialog in Folia's dialog style (rounded corners,
+/// Reusable confirmation dialog in XPDF's dialog style (rounded corners,
 /// AppColors palette, Cancel + filled Confirm actions).
 ///
 /// Resolves to `true` when the user confirms, `false` otherwise.

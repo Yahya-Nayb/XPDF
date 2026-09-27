@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/recent_file.dart';
 import '../models/folder.dart';
 import '../models/pdf_annotation.dart';
+import '../models/pdf_bookmark.dart';
 
 /// Handles all reads and writes to SharedPreferences.
 ///
@@ -16,6 +17,7 @@ class StorageService {
   static const String _foldersKey = 'folders';
   static const String _darkModeKey = 'dark_mode';
   static const String _annotationsKey = 'pdf_annotations';
+  static const String _bookmarksKey = 'pdf_bookmarks';
 
   // Reading-defaults settings (Settings screen). The page-layout value is a
   // plain string: "single" or "continuous" ("continuous" = current default).
@@ -30,6 +32,13 @@ class StorageService {
   // File-list sort order ("recent", "name_asc", "name_desc",
   // "size_largest", "size_smallest"). Default = insertion order recency.
   static const String _sortModeKey = 'sort_mode';
+
+  // Home "Recent files" view layout ("grid" or "list"). Defaults to "grid".
+  static const String _recentViewModeKey = 'recent_view_mode';
+
+  // Whether the first-launch onboarding has been shown. Absent (null) means
+  // "not seen yet" — defaults to false so brand-new installs get the tour.
+  static const String _hasSeenOnboardingKey = 'has_seen_onboarding';
 
   // -- Recent files ----------------------------------------------------------
 
@@ -99,6 +108,30 @@ class StorageService {
     );
   }
 
+  // -- PDF bookmarks ----------------------------------------------------------
+
+  /// Load the saved list of user page bookmarks.
+  ///
+  /// If nothing has been saved yet (first launch), returns an empty list.
+  static Future<List<PdfBookmark>> loadBookmarks() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonString = prefs.getString(_bookmarksKey);
+    if (jsonString == null || jsonString.isEmpty) {
+      return [];
+    }
+    return PdfBookmark.decodeList(jsonString);
+  }
+
+  /// Persist the full list of user page bookmarks (same whole-list strategy;
+  /// the bookmarks for every PDF share one key).
+  static Future<void> saveBookmarks(List<PdfBookmark> bookmarks) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _bookmarksKey,
+      PdfBookmark.encodeList(bookmarks),
+    );
+  }
+
   // -- Reading defaults ------------------------------------------------------
 
   /// Load the default page layout mode ("single" or "continuous").
@@ -158,6 +191,22 @@ class StorageService {
     await prefs.setString(_sortModeKey, mode);
   }
 
+  // -- Recent-files view mode ------------------------------------------------
+
+  /// Load the Home screen's Recent-list display layout.
+  ///
+  /// Returns `"grid"` or `"list"`, defaulting to `"grid"` on first launch.
+  static Future<String> loadRecentViewMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_recentViewModeKey) ?? 'grid';
+  }
+
+  /// Persist the Recent-list display layout.
+  static Future<void> saveRecentViewMode(String mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_recentViewModeKey, mode);
+  }
+
   // -- Dark mode -------------------------------------------------------------
 
   /// Load the saved dark-mode preference.
@@ -172,5 +221,22 @@ class StorageService {
   static Future<void> saveDarkMode(bool isDark) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_darkModeKey, isDark);
+  }
+
+  // -- Onboarding -------------------------------------------------------------
+
+  /// Load whether the first-launch onboarding has already been shown.
+  ///
+  /// Defaults to `false` on first install so the tour appears once.
+  static Future<bool> loadHasSeenOnboarding() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_hasSeenOnboardingKey) ?? false;
+  }
+
+  /// Persist that the first-launch onboarding has been shown (via skipping
+  /// or completing it) so it never reappears.
+  static Future<void> saveHasSeenOnboarding(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_hasSeenOnboardingKey, value);
   }
 }

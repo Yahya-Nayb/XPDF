@@ -44,6 +44,21 @@ class FileService {
     return result.first.path;
   }
 
+  /// Open the system file picker filtered to PDFs, allowing multiple files.
+  ///
+  /// Returns the full paths of the chosen files (empty if the user cancelled).
+  /// Used by the Merge PDFs tool, which needs 2+ sources in one pick.
+  /// `FilePicker.pickFiles` always allows multi-selection in this plugin
+  /// version, so no extra flag is needed.
+  static Future<List<String>> pickPdfFiles() async {
+    final files = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf'],
+    );
+
+    return [for (final f in files) if (f.path != null) f.path!].toList();
+  }
+
   /// Get the file size in bytes for a given [path].
   static Future<int> getFileSize(String path) async {
     final file = File(path);

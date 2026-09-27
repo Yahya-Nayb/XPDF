@@ -5,29 +5,20 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-import '../colors.dart';
-import '../models/recent_file.dart';
 import '../providers/recent_files_provider.dart';
 import '../providers/settings_provider.dart';
 import '../providers/theme_provider.dart';
+import '../theme/app_colors.dart';
+import '../models/recent_file.dart';
 import '../widgets/confirm_dialog.dart';
+import 'pro_screen.dart';
 
-/// Red used for destructive actions — matches the app's PDF-badge red so it
-/// reads as "warning" without introducing a new palette color.
-const Color _destructiveRed = Color(0xFFE0473C);
+const String kPrivacyPolicyUrl = 'https://example.com/privacy';
 
-/// Green used for the "Granted" permission status — matches the folder
-/// palette green.
 const Color _grantedGreen = Color(0xFF3BA776);
 
-/// The Settings tab content — grouped sections for Appearance, Reading,
-/// Storage, Recent List, Permissions and About.
-///
-/// Embedded inside [HomeScreen]'s scroll view (nav index 3), like the
-/// Library view. Because it's built conditionally, entering the tab
-/// re-runs [initState] — storage stats and permission status are always
-/// fresh on entry.
 class SettingsView extends StatefulWidget {
   const SettingsView({super.key});
 
@@ -37,14 +28,9 @@ class SettingsView extends StatefulWidget {
 
 class _SettingsViewState extends State<SettingsView>
     with WidgetsBindingObserver {
-  // App documents directory prefix — files under it are local copies the
-  // app created (URL downloads and scans); anything else is just referenced
-  // from elsewhere on the device.
   String _docsPath = '';
-
   int _importedCount = 0;
   int _importedBytes = 0;
-
   PermissionStatus _cameraStatus = PermissionStatus.denied;
   String _version = '';
 
@@ -61,7 +47,6 @@ class _SettingsViewState extends State<SettingsView>
     super.dispose();
   }
 
-  /// Re-check camera status when returning from the system settings app.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
@@ -98,8 +83,6 @@ class _SettingsViewState extends State<SettingsView>
   List<RecentFile> _importedFiles() =>
       context.read<RecentFilesProvider>().files.where(_isImported).toList();
 
-  /// Sum the real on-disk size of every imported file via File.length().
-  /// Missing files (already deleted externally) are skipped silently.
   Future<void> _refreshStorageStats() async {
     if (_docsPath.isEmpty) return;
 
@@ -108,9 +91,7 @@ class _SettingsViewState extends State<SettingsView>
     for (final file in imported) {
       try {
         total += await File(file.path).length();
-      } catch (_) {
-        // File missing or unreadable — contributes nothing to the total.
-      }
+      } catch (_) {}
     }
 
     if (!mounted) return;
@@ -119,10 +100,6 @@ class _SettingsViewState extends State<SettingsView>
       _importedBytes = total;
     });
   }
-
-  // ---------------------------------------------------------------------------
-  // Actions
-  // ---------------------------------------------------------------------------
 
   void _showSnack(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -135,9 +112,6 @@ class _SettingsViewState extends State<SettingsView>
     );
   }
 
-  /// Permanently delete the physical imported files (URL downloads and
-  /// scans living in the app's documents directory), then drop their list
-  /// entries. Files referenced from elsewhere on the device are untouched.
   Future<void> _clearAllImportedFiles() async {
     final imported = _importedFiles();
     if (imported.isEmpty) {
@@ -162,9 +136,7 @@ class _SettingsViewState extends State<SettingsView>
       try {
         await File(file.path).delete();
         deleted++;
-      } catch (_) {
-        // Already gone (or unreadable) — skip it, don't crash.
-      }
+      } catch (_) {}
     }
     if (!mounted) return;
 
@@ -177,7 +149,6 @@ class _SettingsViewState extends State<SettingsView>
     _showSnack('$deleted imported ${deleted == 1 ? 'file' : 'files'} deleted');
   }
 
-  /// Empty the recent list WITHOUT touching any files on disk.
   Future<void> _clearRecentList() async {
     final count = context.read<RecentFilesProvider>().files.length;
     if (count == 0) {
@@ -201,9 +172,20 @@ class _SettingsViewState extends State<SettingsView>
     _showSnack('Recent list cleared');
   }
 
-  // ---------------------------------------------------------------------------
-  // Build helpers
-  // ---------------------------------------------------------------------------
+  Future<void> _openPrivacyPolicy() async {
+    try {
+      final ok = await launchUrl(
+        Uri.parse(kPrivacyPolicyUrl),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!ok && mounted) {
+        _showSnack('Could not open the privacy policy link');
+      }
+    } catch (_) {
+      if (!mounted) return;
+      _showSnack('Could not open the privacy policy link');
+    }
+  }
 
   static String _formatBytes(int bytes) {
     if (bytes < 1024) return '$bytes B';
@@ -217,46 +199,37 @@ class _SettingsViewState extends State<SettingsView>
   }
 
   Widget _sectionHeader(String title) {
+    final colors = AppColors.schemeOf(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 24, 4, 8),
+      padding: const EdgeInsets.fromLTRB(4, 20, 4, 8),
       child: Text(
         title.toUpperCase(),
         style: TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-          letterSpacing: 0.8,
-          color: AppColors.colorOf(context, 'textMuted'),
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.0,
+          color: colors.textSecondary,
         ),
       ),
     );
   }
 
   Widget _card(List<Widget> rows) {
+    final colors = AppColors.schemeOf(context);
     return Container(
       decoration: BoxDecoration(
-        color: AppColors.colorOf(context, 'card'),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.colorOf(context, 'border')),
-        boxShadow: Theme.of(context).brightness == Brightness.light
-            ? [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.06),
-                  blurRadius: 10,
-                  offset: const Offset(0, 2),
-                ),
-              ]
-            : null,
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(AppColors.radiusCard),
+        border: Border.all(color: colors.border),
       ),
       child: Column(children: rows),
     );
   }
 
-  Widget _rowDivider() => Divider(
-    height: 1,
-    thickness: 1,
-    indent: 62,
-    color: AppColors.colorOf(context, 'border'),
-  );
+  Widget _rowDivider() {
+    final colors = AppColors.schemeOf(context);
+    return Divider(height: 1, thickness: 1, indent: 58, color: colors.border);
+  }
 
   Widget _row({
     required IconData icon,
@@ -267,27 +240,24 @@ class _SettingsViewState extends State<SettingsView>
     Widget? trailing,
     VoidCallback? onTap,
   }) {
+    final colors = AppColors.schemeOf(context);
+    final resolvedIconColor = iconColor ?? colors.accent;
+
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(AppColors.radiusCard),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         child: Row(
           children: [
             Container(
-              width: 36,
-              height: 36,
+              width: 28,
+              height: 28,
               decoration: BoxDecoration(
-                color:
-                    (iconColor ?? AppColors.colorOf(context, 'textSecondary'))
-                        .withValues(alpha: 0.10),
-                borderRadius: BorderRadius.circular(10),
+                color: colors.accentTint,
+                borderRadius: BorderRadius.circular(8),
               ),
-              child: Icon(
-                icon,
-                size: 18,
-                color: iconColor ?? AppColors.colorOf(context, 'textSecondary'),
-              ),
+              child: Icon(icon, size: 16, color: resolvedIconColor),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -301,9 +271,7 @@ class _SettingsViewState extends State<SettingsView>
                     style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
-                      color:
-                          titleColor ??
-                          AppColors.colorOf(context, 'textPrimary'),
+                      color: titleColor ?? colors.textPrimary,
                     ),
                   ),
                   if (subtitle != null) ...[
@@ -315,47 +283,152 @@ class _SettingsViewState extends State<SettingsView>
                       style: TextStyle(
                         fontSize: 12,
                         height: 1.35,
-                        color: AppColors.colorOf(context, 'textMuted'),
+                        color: colors.textSecondary,
                       ),
                     ),
                   ],
                 ],
               ),
             ),
-            if (trailing != null) ...[const SizedBox(width: 12), trailing],
+            if (trailing != null) ...[const SizedBox(width: 8), trailing],
           ],
         ),
       ),
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // Build
-  // ---------------------------------------------------------------------------
+  Widget _proCard() {
+    final colors = AppColors.schemeOf(context);
+
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const ProScreen()),
+        );
+      },
+      child: Container(
+        margin: const EdgeInsets.only(top: 8, bottom: 24),
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: colors.accent,
+          borderRadius: BorderRadius.circular(AppColors.radiusCard),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(
+                Icons.workspace_premium_rounded,
+                color: Colors.white,
+                size: 26,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'XPDF Pro',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Unlimited merge, split & scans',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.white.withValues(alpha: 0.9),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.chevron_right_rounded,
+              color: Colors.white.withValues(alpha: 0.9),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsProvider>();
+    final colors = AppColors.schemeOf(context);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // -- Own header (the shared Home header is hidden on this tab) --
-          Padding(
-            padding: const EdgeInsets.only(top: 24),
-            child: Text(
-              'Settings',
-              style: TextStyle(
-                fontSize: 30,
-                fontWeight: FontWeight.w700,
-                color: AppColors.colorOf(context, 'textPrimary'),
+          _sectionHeader('Reading'),
+          _card([
+            _row(
+              icon: Icons.view_day_outlined,
+              title: 'Page layout',
+              subtitle: 'Applies to newly opened files',
+              trailing: SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'single', label: Text('Single')),
+                  ButtonSegment(value: 'continuous', label: Text('Scroll')),
+                ],
+                selected: {settings.pageLayoutMode},
+                showSelectedIcon: false,
+                style: ButtonStyle(
+                  visualDensity: const VisualDensity(
+                    horizontal: -4,
+                    vertical: -2,
+                  ),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  textStyle: const WidgetStatePropertyAll(
+                    TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                  ),
+                  backgroundColor: WidgetStateProperty.resolveWith((states) {
+                    return states.contains(WidgetState.selected)
+                        ? colors.accent
+                        : Colors.transparent;
+                  }),
+                  foregroundColor: WidgetStateProperty.resolveWith((states) {
+                    return states.contains(WidgetState.selected)
+                        ? Colors.white
+                        : colors.textSecondary;
+                  }),
+                  side: WidgetStateBorderSide.resolveWith((states) {
+                    return BorderSide(
+                      color: states.contains(WidgetState.selected)
+                          ? colors.accent
+                          : colors.border,
+                    );
+                  }),
+                ),
+                onSelectionChanged: (selection) =>
+                    settings.setPageLayoutMode(selection.first),
               ),
             ),
-          ),
+            _rowDivider(),
+            _row(
+              icon: Icons.bookmark_added_rounded,
+              title: 'Remember last page',
+              subtitle: 'Reopen files where you left off',
+              trailing: Switch(
+                value: settings.rememberLastPage,
+                onChanged: settings.setRememberLastPage,
+              ),
+            ),
+          ]),
 
-          // -- Appearance ---------------------------------------------------
           _sectionHeader('Appearance'),
           _card([
             Consumer<ThemeProvider>(
@@ -375,69 +448,49 @@ class _SettingsViewState extends State<SettingsView>
             ),
           ]),
 
-          // -- Reading ------------------------------------------------------
-          _sectionHeader('Reading'),
+          _sectionHeader('Privacy'),
           _card([
             _row(
-              icon: Icons.menu_book_rounded,
-              title: 'Page layout',
-              subtitle: 'Applies to newly opened files',
-              trailing: SegmentedButton<String>(
-                segments: const [
-                  ButtonSegment(value: 'single', label: Text('Single')),
-                  ButtonSegment(value: 'continuous', label: Text('Scroll')),
-                ],
-                selected: {settings.pageLayoutMode},
-                showSelectedIcon: false,
-                // M3's default selected color comes from
-                // colorScheme.secondary, which this app never overrides —
-                // that's why it rendered as framework teal. Pin every
-                // selected state to AppColors.primary; colorOf() picks the
-                // correct variant for dark mode automatically.
-                style: ButtonStyle(
-                  visualDensity: const VisualDensity(
-                    horizontal: -4,
-                    vertical: -2,
-                  ),
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  textStyle: const WidgetStatePropertyAll(
-                    TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-                  ),
-                  backgroundColor: WidgetStateProperty.resolveWith((states) {
-                    return states.contains(WidgetState.selected)
-                        ? AppColors.colorOf(context, 'primary')
-                        : Colors.transparent;
-                  }),
-                  foregroundColor: WidgetStateProperty.resolveWith((states) {
-                    return states.contains(WidgetState.selected)
-                        ? Colors.white
-                        : AppColors.colorOf(context, 'textMuted');
-                  }),
-                  side: WidgetStateBorderSide.resolveWith((states) {
-                    return BorderSide(
-                      color: states.contains(WidgetState.selected)
-                          ? AppColors.colorOf(context, 'primary')
-                          : AppColors.colorOf(context, 'border'),
-                    );
-                  }),
-                ),
-                onSelectionChanged: (selection) =>
-                    settings.setPageLayoutMode(selection.first),
-              ),
+              icon: Icons.cloud_off_rounded,
+              title: 'Works fully offline',
+              subtitle:
+                  'Everything happens on your device — nothing is sent '
+                  'to any server.',
             ),
             _rowDivider(),
             _row(
-              icon: Icons.bookmark_added_rounded,
-              title: 'Remember last page',
-              subtitle: 'Reopen files where you left off',
-              trailing: Switch(
-                value: settings.rememberLastPage,
-                onChanged: (value) => settings.setRememberLastPage(value),
+              icon: Icons.wifi_off_rounded,
+              title: 'Only URL downloads use data',
+              subtitle:
+                  'Downloading a PDF from a link is the one feature that '
+                  'uses the internet — and only when you choose to.',
+            ),
+            _rowDivider(),
+            _row(
+              icon: Icons.visibility_off_rounded,
+              title: 'No ads, no tracking',
+              subtitle: 'No analytics, no trackers, nothing sold.',
+            ),
+            _rowDivider(),
+            _row(
+              icon: Icons.no_accounts_rounded,
+              title: 'No account needed',
+              subtitle: 'Just open the app and read — no sign-up.',
+            ),
+            _rowDivider(),
+            _row(
+              icon: Icons.privacy_tip_rounded,
+              title: 'Privacy policy',
+              subtitle: 'The full policy, when you want more detail',
+              trailing: Icon(
+                Icons.open_in_new_rounded,
+                size: 16,
+                color: colors.textSecondary,
               ),
+              onTap: _openPrivacyPolicy,
             ),
           ]),
 
-          // -- Storage ------------------------------------------------------
           _sectionHeader('Storage'),
           _card([
             _row(
@@ -457,28 +510,22 @@ class _SettingsViewState extends State<SettingsView>
               icon: Icons.delete_sweep_rounded,
               title: 'Clear all imported files',
               subtitle: 'Permanently deletes downloaded & scanned copies',
-              iconColor: _destructiveRed,
-              titleColor: _destructiveRed,
+              iconColor: colors.accent,
+              titleColor: colors.accent,
               onTap: _clearAllImportedFiles,
             ),
-          ]),
-
-          // -- Recent list ----------------------------------------------------
-          _sectionHeader('Recent List'),
-          _card([
+            _rowDivider(),
             _row(
               icon: Icons.history_rounded,
               title: 'Clear recent list',
               subtitle:
-                  'Removes list entries only — files stay on your '
-                  'device',
-              iconColor: _destructiveRed,
-              titleColor: _destructiveRed,
+                  'Removes list entries only — files stay on your device',
+              iconColor: colors.accent,
+              titleColor: colors.accent,
               onTap: _clearRecentList,
             ),
           ]),
 
-          // -- Permissions ----------------------------------------------------
           _sectionHeader('Permissions'),
           _card([
             _row(
@@ -489,10 +536,7 @@ class _SettingsViewState extends State<SettingsView>
                   : _cameraStatus == PermissionStatus.permanentlyDenied
                   ? 'Denied permanently'
                   : 'Denied',
-              iconColor: _cameraGranted ? _grantedGreen : _destructiveRed,
-              titleColor: _cameraGranted
-                  ? null
-                  : AppColors.colorOf(context, 'textPrimary'),
+              iconColor: _cameraGranted ? _grantedGreen : colors.accent,
               trailing: TextButton(
                 onPressed: openAppSettings,
                 style: TextButton.styleFrom(
@@ -504,14 +548,13 @@ class _SettingsViewState extends State<SettingsView>
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
-                    color: AppColors.colorOf(context, 'primary'),
+                    color: colors.accent,
                   ),
                 ),
               ),
             ),
           ]),
 
-          // -- About ----------------------------------------------------------
           _sectionHeader('About'),
           _card([
             Padding(
@@ -519,16 +562,16 @@ class _SettingsViewState extends State<SettingsView>
               child: Row(
                 children: [
                   Container(
-                    width: 48,
-                    height: 48,
+                    width: 44,
+                    height: 44,
                     decoration: BoxDecoration(
-                      color: AppColors.colorOf(context, 'pdfBadgeBg'),
+                      color: colors.accentTint,
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Icon(
                       Icons.picture_as_pdf_rounded,
-                      color: AppColors.colorOf(context, 'pdfIcon'),
-                      size: 26,
+                      color: colors.accent,
+                      size: 24,
                     ),
                   ),
                   const SizedBox(width: 14),
@@ -543,10 +586,7 @@ class _SettingsViewState extends State<SettingsView>
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w700,
-                                color: AppColors.colorOf(
-                                  context,
-                                  'textPrimary',
-                                ),
+                                color: colors.textPrimary,
                               ),
                             ),
                             const SizedBox(width: 8),
@@ -557,10 +597,7 @@ class _SettingsViewState extends State<SettingsView>
                                   vertical: 2,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: AppColors.colorOf(
-                                    context,
-                                    'inputFill',
-                                  ),
+                                  color: colors.secondarySurface,
                                   borderRadius: BorderRadius.circular(8),
                                 ),
                                 child: Text(
@@ -568,10 +605,7 @@ class _SettingsViewState extends State<SettingsView>
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
-                                    color: AppColors.colorOf(
-                                      context,
-                                      'textSecondary',
-                                    ),
+                                    color: colors.textSecondary,
                                   ),
                                 ),
                               ),
@@ -582,7 +616,7 @@ class _SettingsViewState extends State<SettingsView>
                           'A minimal, ad-free PDF reader.',
                           style: TextStyle(
                             fontSize: 13,
-                            color: AppColors.colorOf(context, 'textMuted'),
+                            color: colors.textSecondary,
                           ),
                         ),
                       ],
@@ -592,6 +626,8 @@ class _SettingsViewState extends State<SettingsView>
               ),
             ),
           ]),
+
+          _proCard(),
         ],
       ),
     );

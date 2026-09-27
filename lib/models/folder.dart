@@ -25,13 +25,13 @@ class Folder {
   });
 
   // ---------------------------------------------------------------------------
-  // Fixed palette — ~6 pleasant accents from Folia's existing color family
+  // Fixed palette — ~6 pleasant accents from XPDF's existing color family
   // (primary blue, PDF red, favorite gold, plus three harmonized companions).
   // No full color picker by design.
   // ---------------------------------------------------------------------------
 
   static const List<String> colorPalette = [
-    '#3A7BD5', // Folia primary blue
+    '#3A7BD5', // XPDF primary blue
     '#E0473C', // PDF badge red
     '#F6B93B', // Favorite star gold
     '#3BA776', // Calm green

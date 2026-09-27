@@ -6,12 +6,12 @@ import '../colors.dart';
 /// This is a **stateless** widget — the search query and controller live in
 /// `HomeScreen` (the parent StatefulWidget) because that's where the filtering
 /// logic and setState live. This widget just renders the visual input.
-class FoliaSearchBar extends StatelessWidget {
+class XpdfSearchBar extends StatelessWidget {
   final TextEditingController controller;
   final ValueChanged<String> onChanged;
   final VoidCallback onClear;
 
-  const FoliaSearchBar({
+  const XpdfSearchBar({
     super.key,
     required this.controller,
     required this.onChanged,
