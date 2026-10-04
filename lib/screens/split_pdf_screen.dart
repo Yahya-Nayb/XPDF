@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../colors.dart';
+import '../core/theme.dart';
 import '../models/recent_file.dart';
 import '../providers/recent_files_provider.dart';
 import '../providers/split_pdf_provider.dart';
@@ -51,12 +51,12 @@ class _SplitPdfViewState extends State<_SplitPdfView> {
         final hasSource = provider.sourcePath != null;
 
         return Scaffold(
-          backgroundColor: AppColors.colorOf(context, 'background'),
+          backgroundColor: Theme.of(context).scaffoldBackgroundColor,
           appBar: AppBar(
             title: const Text('Split PDF'),
-            backgroundColor: AppColors.colorOf(context, 'background'),
+            backgroundColor: Theme.of(context).scaffoldBackgroundColor,
             elevation: 0,
-            foregroundColor: AppColors.colorOf(context, 'textPrimary'),
+            foregroundColor: Theme.of(context).colorScheme.onSurface,
           ),
           body: SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
@@ -69,7 +69,7 @@ class _SplitPdfViewState extends State<_SplitPdfView> {
                   style: TextStyle(
                     fontSize: 22,
                     fontWeight: FontWeight.w700,
-                    color: AppColors.colorOf(context, 'textPrimary'),
+                    color: Theme.of(context).colorScheme.onSurface,
                   ),
                 ),
                 const SizedBox(height: 6),
@@ -78,7 +78,7 @@ class _SplitPdfViewState extends State<_SplitPdfView> {
                   'you define. Works fully on-device.',
                   style: TextStyle(
                     fontSize: 14,
-                    color: AppColors.colorOf(context, 'textMuted'),
+                    color: context.appColors.textSecondary,
                   ),
                 ),
 
@@ -90,7 +90,7 @@ class _SplitPdfViewState extends State<_SplitPdfView> {
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
-                    color: AppColors.colorOf(context, 'textPrimary'),
+                    color: Theme.of(context).colorScheme.onSurface,
                   ),
                 ),
                 const SizedBox(height: 14),
@@ -116,7 +116,7 @@ class _SplitPdfViewState extends State<_SplitPdfView> {
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
-                      color: AppColors.colorOf(context, 'textPrimary'),
+                      color: Theme.of(context).colorScheme.onSurface,
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -151,16 +151,16 @@ class _SplitPdfViewState extends State<_SplitPdfView> {
                       keyboardType: TextInputType.text,
                       style: TextStyle(
                         fontSize: 15,
-                        color: AppColors.colorOf(context, 'textPrimary'),
+                        color: Theme.of(context).colorScheme.onSurface,
                       ),
                       decoration: InputDecoration(
                         hintText: 'e.g. 1-5, 6-10, 11-15',
                         hintStyle: TextStyle(
                           fontSize: 15,
-                          color: AppColors.colorOf(context, 'textMuted'),
+                          color: context.appColors.textSecondary,
                         ),
                         filled: true,
-                        fillColor: AppColors.colorOf(context, 'inputFill'),
+                        fillColor: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
                         contentPadding: const EdgeInsets.symmetric(
                           horizontal: 16,
                           vertical: 14,
@@ -176,7 +176,7 @@ class _SplitPdfViewState extends State<_SplitPdfView> {
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(14),
                           borderSide: BorderSide(
-                            color: AppColors.colorOf(context, 'primary'),
+                            color: Theme.of(context).colorScheme.primary,
                           ),
                         ),
                       ),
@@ -187,7 +187,7 @@ class _SplitPdfViewState extends State<_SplitPdfView> {
                       'Separate ranges with commas.',
                       style: TextStyle(
                         fontSize: 12,
-                        color: AppColors.colorOf(context, 'textMuted'),
+                        color: context.appColors.textSecondary,
                       ),
                     ),
                   ],
@@ -207,9 +207,9 @@ class _SplitPdfViewState extends State<_SplitPdfView> {
                         ? () => _splitAndShowResult(context, provider)
                         : null,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.colorOf(context, 'primary'),
+                      backgroundColor: Theme.of(context).colorScheme.primary,
                       disabledBackgroundColor:
-                          AppColors.colorOf(context, 'primary')
+                          Theme.of(context).colorScheme.primary
                               .withValues(alpha: 0.4),
                       disabledForegroundColor: Colors.white,
                       foregroundColor: Colors.white,
@@ -246,8 +246,8 @@ class _SplitPdfViewState extends State<_SplitPdfView> {
                       value: provider.progress,
                       minHeight: 6,
                       backgroundColor:
-                          AppColors.colorOf(context, 'border'),
-                      color: AppColors.colorOf(context, 'primary'),
+                          context.appColors.border,
+                      color: Theme.of(context).colorScheme.primary,
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -257,7 +257,7 @@ class _SplitPdfViewState extends State<_SplitPdfView> {
                       '${provider.progressTotal}…',
                       style: TextStyle(
                         fontSize: 13,
-                        color: AppColors.colorOf(context, 'textMuted'),
+                        color: context.appColors.textSecondary,
                       ),
                     ),
                   ),
@@ -394,7 +394,7 @@ class _SuccessBottomSheet extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
       decoration: BoxDecoration(
-        color: AppColors.colorOf(context, 'surface'),
+        color: Theme.of(context).colorScheme.surface,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
       ),
       child: SafeArea(
@@ -410,7 +410,7 @@ class _SuccessBottomSheet extends StatelessWidget {
                 height: 4,
                 margin: const EdgeInsets.only(bottom: 20),
                 decoration: BoxDecoration(
-                  color: AppColors.colorOf(context, 'border'),
+                  color: context.appColors.border,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -439,7 +439,7 @@ class _SuccessBottomSheet extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
-                  color: AppColors.colorOf(context, 'textPrimary'),
+                  color: Theme.of(context).colorScheme.onSurface,
                 ),
               ),
             ),
@@ -450,7 +450,7 @@ class _SuccessBottomSheet extends StatelessWidget {
                 'created · tap a file to open it',
                 style: TextStyle(
                   fontSize: 14,
-                  color: AppColors.colorOf(context, 'textMuted'),
+                  color: context.appColors.textSecondary,
                 ),
               ),
             ),
@@ -461,9 +461,9 @@ class _SuccessBottomSheet extends StatelessWidget {
               borderRadius: BorderRadius.circular(14),
               child: Container(
                 decoration: BoxDecoration(
-                  color: AppColors.colorOf(context, 'card'),
+                  color: Theme.of(context).colorScheme.surface,
                   border:
-                      Border.all(color: AppColors.colorOf(context, 'border')),
+                      Border.all(color: context.appColors.border),
                   borderRadius: BorderRadius.circular(14),
                 ),
                 child: SizedBox(
@@ -474,7 +474,7 @@ class _SuccessBottomSheet extends StatelessWidget {
                     itemCount: recents.length,
                     separatorBuilder: (_, _) => Divider(
                       height: 1,
-                      color: AppColors.colorOf(context, 'border'),
+                      color: context.appColors.border,
                     ),
                     itemBuilder: (context, index) {
                       final recent = recents[index];
@@ -489,15 +489,12 @@ class _SuccessBottomSheet extends StatelessWidget {
                           width: 34,
                           height: 34,
                           decoration: BoxDecoration(
-                            color: AppColors.colorOf(
-                              context,
-                              'pdfBadgeBg',
-                            ),
+                            color: context.appColors.primaryContainer,
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: Icon(
                             Icons.picture_as_pdf_outlined,
-                            color: AppColors.colorOf(context, 'pdfIcon'),
+                            color: Theme.of(context).colorScheme.primary,
                             size: 18,
                           ),
                         ),
@@ -507,19 +504,19 @@ class _SuccessBottomSheet extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 13,
-                            color: AppColors.colorOf(context, 'textPrimary'),
+                            color: Theme.of(context).colorScheme.onSurface,
                           ),
                         ),
                         subtitle: Text(
                           recent.formattedSize,
                           style: TextStyle(
                             fontSize: 12,
-                            color: AppColors.colorOf(context, 'textMuted'),
+                            color: context.appColors.textSecondary,
                           ),
                         ),
                         trailing: Icon(
                           Icons.open_in_full_rounded,
-                          color: AppColors.colorOf(context, 'textMuted'),
+                          color: context.appColors.textSecondary,
                           size: 18,
                         ),
                       );
@@ -542,11 +539,11 @@ class _SuccessBottomSheet extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
-                    color: AppColors.colorOf(context, 'surface'),
+                    color: Theme.of(context).colorScheme.surface,
                   ),
                 ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.colorOf(context, 'primary'),
+                  backgroundColor: Theme.of(context).colorScheme.primary,
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14),
@@ -566,7 +563,7 @@ class _SuccessBottomSheet extends StatelessWidget {
                   'Done',
                   style: TextStyle(
                     fontSize: 15,
-                    color: AppColors.colorOf(context, 'textMuted'),
+                    color: context.appColors.textSecondary,
                   ),
                 ),
               ),
@@ -598,9 +595,9 @@ class _PickSourceCard extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
         decoration: BoxDecoration(
-          color: AppColors.colorOf(context, 'card'),
+          color: Theme.of(context).colorScheme.surface,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: AppColors.colorOf(context, 'border')),
+          border: Border.all(color: context.appColors.border),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.06),
@@ -615,7 +612,7 @@ class _PickSourceCard extends StatelessWidget {
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: AppColors.colorOf(context, 'inputFill'),
+                color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: isLoading
@@ -623,12 +620,12 @@ class _PickSourceCard extends StatelessWidget {
                       padding: const EdgeInsets.all(10),
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: AppColors.colorOf(context, 'primary'),
+                        color: Theme.of(context).colorScheme.primary,
                       ),
                     )
                   : Icon(
                       Icons.picture_as_pdf_outlined,
-                      color: AppColors.colorOf(context, 'primary'),
+                      color: Theme.of(context).colorScheme.primary,
                       size: 24,
                     ),
             ),
@@ -642,7 +639,7 @@ class _PickSourceCard extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
-                      color: AppColors.colorOf(context, 'textPrimary'),
+                      color: Theme.of(context).colorScheme.onSurface,
                     ),
                   ),
                   const SizedBox(height: 2),
@@ -652,7 +649,7 @@ class _PickSourceCard extends StatelessWidget {
                         : 'Select the file you want to split',
                     style: TextStyle(
                       fontSize: 12,
-                      color: AppColors.colorOf(context, 'textMuted'),
+                      color: context.appColors.textSecondary,
                     ),
                   ),
                 ],
@@ -661,7 +658,7 @@ class _PickSourceCard extends StatelessWidget {
             if (!isLoading)
               Icon(
                 Icons.chevron_right_rounded,
-                color: AppColors.colorOf(context, 'textMuted'),
+                color: context.appColors.textSecondary,
                 size: 22,
               ),
           ],
@@ -690,9 +687,9 @@ class _SourcePdfCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 12, 4, 12),
       decoration: BoxDecoration(
-        color: AppColors.colorOf(context, 'card'),
+        color: Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.colorOf(context, 'border')),
+        border: Border.all(color: context.appColors.border),
       ),
       child: Row(
         children: [
@@ -700,12 +697,12 @@ class _SourcePdfCard extends StatelessWidget {
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              color: AppColors.colorOf(context, 'pdfBadgeBg'),
+              color: context.appColors.primaryContainer,
               borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(
               Icons.picture_as_pdf_outlined,
-              color: AppColors.colorOf(context, 'pdfIcon'),
+              color: Theme.of(context).colorScheme.primary,
               size: 24,
             ),
           ),
@@ -721,7 +718,7 @@ class _SourcePdfCard extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
-                    color: AppColors.colorOf(context, 'textPrimary'),
+                    color: Theme.of(context).colorScheme.onSurface,
                   ),
                 ),
                 const SizedBox(height: 2),
@@ -733,7 +730,7 @@ class _SourcePdfCard extends StatelessWidget {
                           : '',
                   style: TextStyle(
                     fontSize: 12,
-                    color: AppColors.colorOf(context, 'textMuted'),
+                    color: context.appColors.textSecondary,
                   ),
                 ),
               ],
@@ -743,7 +740,7 @@ class _SourcePdfCard extends StatelessWidget {
             onPressed: onRemove,
             icon: Icon(
               Icons.close_rounded,
-              color: AppColors.colorOf(context, 'textMuted'),
+              color: context.appColors.textSecondary,
               size: 20,
             ),
           ),

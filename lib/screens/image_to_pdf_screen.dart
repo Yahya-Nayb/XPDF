@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../colors.dart';
+import '../core/theme.dart';
 import '../providers/image_to_pdf_provider.dart';
 import '../providers/recent_files_provider.dart';
 import '../widgets/image_preview_grid.dart';
@@ -35,12 +35,12 @@ class _ImageToPdfView extends StatelessWidget {
     return Consumer<ImageToPdfProvider>(
       builder: (context, provider, _) {
         return Scaffold(
-          backgroundColor: AppColors.colorOf(context, 'background'),
+          backgroundColor: Theme.of(context).scaffoldBackgroundColor,
           appBar: AppBar(
             title: const Text('Images to PDF'),
-            backgroundColor: AppColors.colorOf(context, 'background'),
+            backgroundColor: Theme.of(context).scaffoldBackgroundColor,
             elevation: 0,
-            foregroundColor: AppColors.colorOf(context, 'textPrimary'),
+            foregroundColor: Theme.of(context).colorScheme.onSurface,
           ),
           body: SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
@@ -53,7 +53,7 @@ class _ImageToPdfView extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 22,
                     fontWeight: FontWeight.w700,
-                    color: AppColors.colorOf(context, 'textPrimary'),
+                    color: Theme.of(context).colorScheme.onSurface,
                   ),
                 ),
                 const SizedBox(height: 6),
@@ -61,7 +61,7 @@ class _ImageToPdfView extends StatelessWidget {
                   'Turn your photos into a single PDF document.',
                   style: TextStyle(
                     fontSize: 14,
-                    color: AppColors.colorOf(context, 'textMuted'),
+                    color: context.appColors.textSecondary,
                   ),
                 ),
 
@@ -73,7 +73,7 @@ class _ImageToPdfView extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
-                    color: AppColors.colorOf(context, 'textPrimary'),
+                    color: Theme.of(context).colorScheme.onSurface,
                   ),
                 ),
                 const SizedBox(height: 14),
@@ -117,9 +117,9 @@ class _ImageToPdfView extends StatelessWidget {
                         ? () => _convertAndShowResult(context, provider)
                         : null,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.colorOf(context, 'primary'),
+                      backgroundColor: Theme.of(context).colorScheme.primary,
                       disabledBackgroundColor:
-                          AppColors.colorOf(context, 'primary')
+                          Theme.of(context).colorScheme.primary
                               .withValues(alpha: 0.4),
                       disabledForegroundColor: Colors.white,
                       foregroundColor: Colors.white,
@@ -235,7 +235,7 @@ class _SuccessBottomSheet extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
       decoration: BoxDecoration(
-        color: AppColors.colorOf(context, 'surface'),
+        color: Theme.of(context).colorScheme.surface,
         borderRadius:
             const BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -250,7 +250,7 @@ class _SuccessBottomSheet extends StatelessWidget {
               height: 4,
               margin: const EdgeInsets.only(bottom: 20),
               decoration: BoxDecoration(
-                color: AppColors.colorOf(context, 'border'),
+                color: context.appColors.border,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -298,7 +298,7 @@ class _SuccessBottomSheet extends StatelessWidget {
                   detail,
                   style: TextStyle(
                     fontSize: 14,
-                    color: AppColors.colorOf(context, 'textMuted'),
+                    color: context.appColors.textSecondary,
                   ),
                 );
               },
@@ -316,7 +316,7 @@ class _SuccessBottomSheet extends StatelessWidget {
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor:
-                      AppColors.colorOf(context, 'primary'),
+                      Theme.of(context).colorScheme.primary,
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14),
@@ -353,9 +353,9 @@ class _SuccessBottomSheet extends StatelessWidget {
                 ),
                 style: OutlinedButton.styleFrom(
                   foregroundColor:
-                      AppColors.colorOf(context, 'primary'),
+                      Theme.of(context).colorScheme.primary,
                   side: BorderSide(
-                    color: AppColors.colorOf(context, 'primary'),
+                    color: Theme.of(context).colorScheme.primary,
                   ),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14),
@@ -372,7 +372,7 @@ class _SuccessBottomSheet extends StatelessWidget {
                 'Done',
                 style: TextStyle(
                   fontSize: 15,
-                  color: AppColors.colorOf(context, 'textMuted'),
+                  color: context.appColors.textSecondary,
                 ),
               ),
             ),
@@ -448,9 +448,9 @@ class _PickCard extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 16),
         decoration: BoxDecoration(
-          color: AppColors.colorOf(context, 'card'),
+          color: Theme.of(context).colorScheme.surface,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: AppColors.colorOf(context, 'border')),
+          border: Border.all(color: context.appColors.border),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.06),
@@ -465,7 +465,7 @@ class _PickCard extends StatelessWidget {
             Icon(
               icon,
               size: 28,
-              color: AppColors.colorOf(context, 'primary'),
+              color: Theme.of(context).colorScheme.primary,
             ),
             const SizedBox(height: 8),
             Text(
@@ -473,7 +473,7 @@ class _PickCard extends StatelessWidget {
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
-                color: AppColors.colorOf(context, 'textPrimary'),
+                color: Theme.of(context).colorScheme.onSurface,
               ),
             ),
           ],

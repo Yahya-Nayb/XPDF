@@ -107,7 +107,7 @@ void main() {
     expect(
       tester.getBottomLeft(fab).dy,
       lessThanOrEqualTo(
-        tester.getTopLeft(find.byType(BottomNavigationBar)).dy,
+        tester.getTopLeft(find.byType(NavigationBar)).dy,
       ),
     );
   });

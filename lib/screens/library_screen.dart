@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../colors.dart';
 import '../models/folder.dart';
 import '../models/recent_file.dart';
 import '../providers/folders_provider.dart';
@@ -114,7 +113,7 @@ class LibraryView extends StatelessWidget {
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w400,
-              color: AppColors.colorOf(context, 'textMuted'),
+              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
             ),
           ),
           const SizedBox(height: 20),
@@ -183,10 +182,10 @@ class _NewFolderCard extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: AppColors.colorOf(context, 'inputFill'),
+          color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: AppColors.colorOf(context, 'border'),
+            color: Theme.of(context).colorScheme.outline,
           ),
         ),
         child: Column(
@@ -196,13 +195,13 @@ class _NewFolderCard extends StatelessWidget {
               width: 40,
               height: 40,
               decoration: BoxDecoration(
-                color: AppColors.colorOf(context, 'card'),
+                color: Theme.of(context).colorScheme.surface,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Icon(
                 Icons.add_rounded,
                 size: 22,
-                color: AppColors.colorOf(context, 'primary'),
+                color: Theme.of(context).colorScheme.primary,
               ),
             ),
             const Spacer(),
@@ -211,15 +210,14 @@ class _NewFolderCard extends StatelessWidget {
               style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
-                color: AppColors.colorOf(context, 'textPrimary'),
-              ),
+                color: Theme.of(context).colorScheme.onSurface),
             ),
             const SizedBox(height: 3),
             Text(
               'Group related PDFs',
               style: TextStyle(
                 fontSize: 12,
-                color: AppColors.colorOf(context, 'textMuted'),
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
               ),
             ),
           ],
@@ -238,17 +236,17 @@ class _UncategorizedCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final muted = AppColors.colorOf(context, 'textMuted');
+    final muted = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6);
 
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: AppColors.colorOf(context, 'card'),
+          color: Theme.of(context).colorScheme.surface,
           borderRadius: BorderRadius.circular(14),
           border:
-              Border.all(color: AppColors.colorOf(context, 'border')),
+              Border.all(color: Theme.of(context).colorScheme.outline,),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -271,8 +269,7 @@ class _UncategorizedCard extends StatelessWidget {
               style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
-                color: AppColors.colorOf(context, 'textPrimary'),
-              ),
+                color: Theme.of(context).colorScheme.onSurface),
             ),
             const SizedBox(height: 3),
             Text(
@@ -358,10 +355,10 @@ class _FolderFilesScreenState extends State<FolderFilesScreen> {
       provider.files.where((f) => f.folderId == widget.folderId).toList(),
     );
     final title = folder?.name ?? 'Uncategorized';
-    final accent = folder?.color ?? AppColors.colorOf(context, 'textMuted');
+    final accent = folder?.color ?? Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6);
 
     return Scaffold(
-      backgroundColor: AppColors.colorOf(context, 'background'),
+      backgroundColor: Theme.of(context).colorScheme.surface,
       body: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -376,7 +373,7 @@ class _FolderFilesScreenState extends State<FolderFilesScreen> {
                     icon: Icon(
                       Icons.arrow_back_rounded,
                       size: 26,
-                      color: AppColors.colorOf(context, 'textPrimary'),
+                      color: Theme.of(context).colorScheme.onSurface,
                     ),
                   ),
                   Expanded(
@@ -396,8 +393,7 @@ class _FolderFilesScreenState extends State<FolderFilesScreen> {
                                 style: TextStyle(
                                   fontSize: 20,
                                   fontWeight: FontWeight.w700,
-                                  color: AppColors.colorOf(
-                                      context, 'textPrimary'),
+                                  color: Theme.of(context).colorScheme.onSurface,
                                 ),
                               ),
                             ),
@@ -410,7 +406,7 @@ class _FolderFilesScreenState extends State<FolderFilesScreen> {
                               : '${folderFiles.length} files',
                           style: TextStyle(
                             fontSize: 13,
-                            color: AppColors.colorOf(context, 'textMuted'),
+                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
                           ),
                         ),
                       ],
@@ -449,8 +445,7 @@ class _FolderFilesScreenState extends State<FolderFilesScreen> {
                               style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.w600,
-                                color: AppColors.colorOf(
-                                    context, 'textPrimary'),
+                                color: Theme.of(context).colorScheme.onSurface,
                               ),
                             ),
                             const SizedBox(height: 10),
@@ -460,8 +455,7 @@ class _FolderFilesScreenState extends State<FolderFilesScreen> {
                               style: TextStyle(
                                 fontSize: 14,
                                 height: 1.5,
-                                color: AppColors.colorOf(
-                                    context, 'textMuted'),
+                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
                               ),
                             ),
                           ],

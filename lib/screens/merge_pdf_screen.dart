@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../colors.dart';
+import '../core/theme.dart';
 import '../models/recent_file.dart';
 import '../providers/merge_pdf_provider.dart';
 import '../providers/recent_files_provider.dart';
@@ -35,12 +35,12 @@ class _MergePdfView extends StatelessWidget {
     return Consumer<MergePdfProvider>(
       builder: (context, provider, _) {
         return Scaffold(
-          backgroundColor: AppColors.colorOf(context, 'background'),
+          backgroundColor: Theme.of(context).scaffoldBackgroundColor,
           appBar: AppBar(
             title: const Text('Merge PDFs'),
-            backgroundColor: AppColors.colorOf(context, 'background'),
+            backgroundColor: Theme.of(context).scaffoldBackgroundColor,
             elevation: 0,
-            foregroundColor: AppColors.colorOf(context, 'textPrimary'),
+            foregroundColor: Theme.of(context).colorScheme.onSurface,
           ),
           body: SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
@@ -53,7 +53,7 @@ class _MergePdfView extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 22,
                     fontWeight: FontWeight.w700,
-                    color: AppColors.colorOf(context, 'textPrimary'),
+                    color: Theme.of(context).colorScheme.onSurface,
                   ),
                 ),
                 const SizedBox(height: 6),
@@ -62,7 +62,7 @@ class _MergePdfView extends StatelessWidget {
                   'Works fully on-device.',
                   style: TextStyle(
                     fontSize: 14,
-                    color: AppColors.colorOf(context, 'textMuted'),
+                    color: context.appColors.textSecondary,
                   ),
                 ),
 
@@ -74,7 +74,7 @@ class _MergePdfView extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
-                    color: AppColors.colorOf(context, 'textPrimary'),
+                    color: Theme.of(context).colorScheme.onSurface,
                   ),
                 ),
                 const SizedBox(height: 14),
@@ -90,7 +90,7 @@ class _MergePdfView extends StatelessWidget {
                         style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
-                          color: AppColors.colorOf(context, 'textPrimary'),
+                          color: Theme.of(context).colorScheme.onSurface,
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -99,7 +99,7 @@ class _MergePdfView extends StatelessWidget {
                           '${provider.paths.length} files · drag to reorder',
                           style: TextStyle(
                             fontSize: 13,
-                            color: AppColors.colorOf(context, 'textMuted'),
+                            color: context.appColors.textSecondary,
                           ),
                         ),
                       ),
@@ -110,9 +110,9 @@ class _MergePdfView extends StatelessWidget {
                     borderRadius: BorderRadius.circular(14),
                     child: Container(
                       decoration: BoxDecoration(
-                        color: AppColors.colorOf(context, 'card'),
+                        color: Theme.of(context).colorScheme.surface,
                         border:
-                            Border.all(color: AppColors.colorOf(context, 'border')),
+                            Border.all(color: context.appColors.border),
                         borderRadius: BorderRadius.circular(14),
                       ),
                       child: SizedBox(
@@ -153,9 +153,9 @@ class _MergePdfView extends StatelessWidget {
                         ? () => _mergeAndShowResult(context, provider)
                         : null,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.colorOf(context, 'primary'),
+                      backgroundColor: Theme.of(context).colorScheme.primary,
                       disabledBackgroundColor:
-                          AppColors.colorOf(context, 'primary')
+                          Theme.of(context).colorScheme.primary
                               .withValues(alpha: 0.4),
                       disabledForegroundColor: Colors.white,
                       foregroundColor: Colors.white,
@@ -193,7 +193,7 @@ class _MergePdfView extends StatelessWidget {
                       'Merging… this can take a moment for large files.',
                       style: TextStyle(
                         fontSize: 13,
-                        color: AppColors.colorOf(context, 'textMuted'),
+                        color: context.appColors.textSecondary,
                       ),
                     ),
                   ),
@@ -332,7 +332,7 @@ class _SuccessBottomSheet extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
       decoration: BoxDecoration(
-        color: AppColors.colorOf(context, 'surface'),
+        color: Theme.of(context).colorScheme.surface,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
       ),
       child: SafeArea(
@@ -346,7 +346,7 @@ class _SuccessBottomSheet extends StatelessWidget {
               height: 4,
               margin: const EdgeInsets.only(bottom: 20),
               decoration: BoxDecoration(
-                color: AppColors.colorOf(context, 'border'),
+                color: context.appColors.border,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -379,7 +379,7 @@ class _SuccessBottomSheet extends StatelessWidget {
               '$fileCount PDFs combined · ${recent.formattedSize}',
               style: TextStyle(
                 fontSize: 14,
-                color: AppColors.colorOf(context, 'textMuted'),
+                color: context.appColors.textSecondary,
               ),
             ),
             const SizedBox(height: 28),
@@ -391,7 +391,7 @@ class _SuccessBottomSheet extends StatelessWidget {
               child: ElevatedButton(
                 onPressed: onOpen,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.colorOf(context, 'primary'),
+                  backgroundColor: Theme.of(context).colorScheme.primary,
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14),
@@ -418,8 +418,8 @@ class _SuccessBottomSheet extends StatelessWidget {
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                 ),
                 style: OutlinedButton.styleFrom(
-                  foregroundColor: AppColors.colorOf(context, 'primary'),
-                  side: BorderSide(color: AppColors.colorOf(context, 'primary')),
+                  foregroundColor: Theme.of(context).colorScheme.primary,
+                  side: BorderSide(color: Theme.of(context).colorScheme.primary),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14),
                   ),
@@ -435,7 +435,7 @@ class _SuccessBottomSheet extends StatelessWidget {
                 'Done',
                 style: TextStyle(
                   fontSize: 15,
-                  color: AppColors.colorOf(context, 'textMuted'),
+                  color: context.appColors.textSecondary,
                 ),
               ),
             ),
@@ -465,9 +465,9 @@ class _PickFileCard extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
         decoration: BoxDecoration(
-          color: AppColors.colorOf(context, 'card'),
+          color: Theme.of(context).colorScheme.surface,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: AppColors.colorOf(context, 'border')),
+          border: Border.all(color: context.appColors.border),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.06),
@@ -482,12 +482,12 @@ class _PickFileCard extends StatelessWidget {
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: AppColors.colorOf(context, 'inputFill'),
+                color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Icon(
                 Icons.note_add_rounded,
-                color: AppColors.colorOf(context, 'primary'),
+                color: Theme.of(context).colorScheme.primary,
                 size: 24,
               ),
             ),
@@ -501,7 +501,7 @@ class _PickFileCard extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
-                      color: AppColors.colorOf(context, 'textPrimary'),
+                      color: Theme.of(context).colorScheme.onSurface,
                     ),
                   ),
                   const SizedBox(height: 2),
@@ -509,7 +509,7 @@ class _PickFileCard extends StatelessWidget {
                     'Pick two or more files to merge',
                     style: TextStyle(
                       fontSize: 12,
-                      color: AppColors.colorOf(context, 'textMuted'),
+                      color: context.appColors.textSecondary,
                     ),
                   ),
                 ],
@@ -517,7 +517,7 @@ class _PickFileCard extends StatelessWidget {
             ),
             Icon(
               Icons.chevron_right_rounded,
-              color: AppColors.colorOf(context, 'textMuted'),
+              color: context.appColors.textSecondary,
               size: 22,
             ),
           ],
@@ -550,14 +550,14 @@ class _MergeFileTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: AppColors.colorOf(context, 'card'),
+      color: Theme.of(context).colorScheme.surface,
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
         leading: ReorderableDragStartListener(
           index: index,
           child: Icon(
             Icons.drag_handle_rounded,
-            color: AppColors.colorOf(context, 'textMuted'),
+            color: context.appColors.textSecondary,
           ),
         ),
         title: Text(
@@ -566,14 +566,14 @@ class _MergeFileTile extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
             fontSize: 14,
-            color: AppColors.colorOf(context, 'textPrimary'),
+            color: Theme.of(context).colorScheme.onSurface,
           ),
         ),
         trailing: IconButton(
           onPressed: onRemove,
           icon: Icon(
             Icons.close_rounded,
-            color: AppColors.colorOf(context, 'textMuted'),
+            color: context.appColors.textSecondary,
             size: 20,
           ),
         ),

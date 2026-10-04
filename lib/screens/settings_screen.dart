@@ -7,13 +7,14 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../core/theme.dart';
 import '../providers/recent_files_provider.dart';
 import '../providers/settings_provider.dart';
 import '../providers/theme_provider.dart';
-import '../theme/app_colors.dart';
 import '../models/recent_file.dart';
 import '../widgets/confirm_dialog.dart';
 import 'pro_screen.dart';
+
 
 const String kPrivacyPolicyUrl = 'https://example.com/privacy';
 
@@ -199,7 +200,6 @@ class _SettingsViewState extends State<SettingsView>
   }
 
   Widget _sectionHeader(String title) {
-    final colors = AppColors.schemeOf(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(4, 20, 4, 8),
       child: Text(
@@ -208,18 +208,18 @@ class _SettingsViewState extends State<SettingsView>
           fontSize: 11,
           fontWeight: FontWeight.w700,
           letterSpacing: 1.0,
-          color: colors.textSecondary,
+          color: context.appColors.textSecondary,
         ),
       ),
     );
   }
 
   Widget _card(List<Widget> rows) {
-    final colors = AppColors.schemeOf(context);
+    final colors = null;
     return Container(
       decoration: BoxDecoration(
         color: colors.surface,
-        borderRadius: BorderRadius.circular(AppColors.radiusCard),
+        borderRadius: BorderRadius.circular(AppTokens.card),
         border: Border.all(color: colors.border),
       ),
       child: Column(children: rows),
@@ -227,7 +227,7 @@ class _SettingsViewState extends State<SettingsView>
   }
 
   Widget _rowDivider() {
-    final colors = AppColors.schemeOf(context);
+    final colors = null;
     return Divider(height: 1, thickness: 1, indent: 58, color: colors.border);
   }
 
@@ -240,12 +240,12 @@ class _SettingsViewState extends State<SettingsView>
     Widget? trailing,
     VoidCallback? onTap,
   }) {
-    final colors = AppColors.schemeOf(context);
+    final colors = null;
     final resolvedIconColor = iconColor ?? colors.accent;
 
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(AppColors.radiusCard),
+      borderRadius: BorderRadius.circular(AppTokens.card),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         child: Row(
@@ -283,7 +283,7 @@ class _SettingsViewState extends State<SettingsView>
                       style: TextStyle(
                         fontSize: 12,
                         height: 1.35,
-                        color: colors.textSecondary,
+                        color: context.appColors.textSecondary,
                       ),
                     ),
                   ],
@@ -298,7 +298,7 @@ class _SettingsViewState extends State<SettingsView>
   }
 
   Widget _proCard() {
-    final colors = AppColors.schemeOf(context);
+    final colors = null;
 
     return GestureDetector(
       onTap: () {
@@ -312,7 +312,7 @@ class _SettingsViewState extends State<SettingsView>
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           color: colors.accent,
-          borderRadius: BorderRadius.circular(AppColors.radiusCard),
+          borderRadius: BorderRadius.circular(AppTokens.card),
         ),
         child: Row(
           children: [
@@ -366,7 +366,7 @@ class _SettingsViewState extends State<SettingsView>
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsProvider>();
-    final colors = AppColors.schemeOf(context);
+    final colors = null;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -485,7 +485,7 @@ class _SettingsViewState extends State<SettingsView>
               trailing: Icon(
                 Icons.open_in_new_rounded,
                 size: 16,
-                color: colors.textSecondary,
+                color: context.appColors.textSecondary,
               ),
               onTap: _openPrivacyPolicy,
             ),
@@ -605,7 +605,7 @@ class _SettingsViewState extends State<SettingsView>
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
-                                    color: colors.textSecondary,
+                                    color: context.appColors.textSecondary,
                                   ),
                                 ),
                               ),
@@ -616,7 +616,7 @@ class _SettingsViewState extends State<SettingsView>
                           'A minimal, ad-free PDF reader.',
                           style: TextStyle(
                             fontSize: 13,
-                            color: colors.textSecondary,
+                            color: context.appColors.textSecondary,
                           ),
                         ),
                       ],

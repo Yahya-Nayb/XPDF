@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 
+import 'core/theme/app_theme_extension.dart';
 import 'theme/app_theme.dart';
 import 'providers/annotations_provider.dart';
 import 'providers/bookmarks_provider.dart';
@@ -104,8 +105,15 @@ class XpdfApp extends StatelessWidget {
             title: 'XPDF',
             debugShowCheckedModeBanner: false,
 
-            theme: AppTheme.light(),
-            darkTheme: AppTheme.dark(),
+            // ThemeData.extensions is not carried over by the legacy theme
+            // builders, so AppThemeExtension is registered explicitly here.
+            // Without it every context.appColors read throws.
+            theme: AppTheme.light().copyWith(
+              extensions: const [AppThemeExtension.light],
+            ),
+            darkTheme: AppTheme.dark().copyWith(
+              extensions: const [AppThemeExtension.dark],
+            ),
 
             // Driven by ThemeProvider
             themeMode: themeProvider.themeMode,

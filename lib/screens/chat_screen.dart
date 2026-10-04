@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/ai_rate_limit_service.dart';
 import '../services/gemini_service.dart';
-import '../theme/app_colors.dart';
+import '../core/theme.dart';
 
 /// Chat interface grounded in the text extracted from one PDF.
 class ChatScreen extends StatefulWidget {
@@ -153,10 +153,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final colors = AppColors.schemeOf(context);
+    final colors = Theme.of(context).colorScheme;
 
     return Scaffold(
-      backgroundColor: colors.background,
+      backgroundColor: colors.surface,
       appBar: AppBar(
         titleSpacing: 0,
         title: Column(
@@ -165,7 +165,7 @@ class _ChatScreenState extends State<ChatScreen> {
             Text(
               'Chat with AI',
               style: TextStyle(
-                color: colors.textPrimary,
+                color: colors.onSurface,
                 fontSize: 17,
                 fontWeight: FontWeight.w700,
               ),
@@ -176,7 +176,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 widget.documentName,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: colors.textSecondary, fontSize: 12),
+                style: TextStyle(color: context.appColors.textSecondary, fontSize: 12),
               ),
             ),
           ],
@@ -192,13 +192,13 @@ class _ChatScreenState extends State<ChatScreen> {
                     vertical: 5,
                   ),
                   decoration: BoxDecoration(
-                    color: colors.secondarySurface,
+                    color: colors.surfaceContainerHighest.withValues(alpha: 0.3),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
                     '$remaining/${AiRateLimitService.dailyLimit} left',
                     style: TextStyle(
-                      color: colors.textSecondary,
+                      color: context.appColors.textSecondary,
                       fontSize: 11,
                       fontWeight: FontWeight.w600,
                     ),
@@ -229,11 +229,11 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildComposer(AppColorScheme colors) {
+  Widget _buildComposer(ColorScheme colors) {
     return Container(
       decoration: BoxDecoration(
         color: colors.surface,
-        border: Border(top: BorderSide(color: colors.border)),
+        border: Border(top: BorderSide(color: context.appColors.border)),
       ),
       child: SafeArea(
         top: false,
@@ -253,9 +253,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   textCapitalization: TextCapitalization.sentences,
                   decoration: InputDecoration(
                     hintText: 'Ask about this PDF…',
-                    hintStyle: TextStyle(color: colors.textSecondary),
+                    hintStyle: TextStyle(color: context.appColors.textSecondary),
                     filled: true,
-                    fillColor: colors.secondarySurface,
+                    fillColor: colors.surfaceContainerHighest.withValues(alpha: 0.3),
                     contentPadding: const EdgeInsets.symmetric(
                       horizontal: 16,
                       vertical: 12,
@@ -273,9 +273,9 @@ class _ChatScreenState extends State<ChatScreen> {
                 tooltip: 'Send question',
                 onPressed: _isSending ? null : _sendMessage,
                 style: IconButton.styleFrom(
-                  backgroundColor: colors.accent,
+                  backgroundColor: colors.primary,
                   foregroundColor: Colors.white,
-                  disabledBackgroundColor: colors.border,
+                  disabledBackgroundColor: context.appColors.border,
                 ),
                 icon: const Icon(Icons.arrow_upward_rounded),
               ),
@@ -318,18 +318,18 @@ class _MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = AppColors.schemeOf(context);
+    final colors = Theme.of(context).colorScheme;
     final isUser = message.author == _MessageAuthor.user;
     final bubbleColor = isUser
-        ? colors.accent
+        ? colors.primary
         : message.isError
-        ? colors.accentTint
+        ? context.appColors.primaryContainer
         : colors.surface;
     final textColor = isUser
         ? Colors.white
         : message.isError
-        ? colors.accent
-        : colors.textPrimary;
+        ? colors.primary
+        : colors.onSurface;
 
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
@@ -350,7 +350,7 @@ class _MessageBubble extends StatelessWidget {
           border: isUser
               ? null
               : Border.all(
-                  color: message.isError ? colors.accent : colors.border,
+                  color: message.isError ? colors.primary : context.appColors.border,
                 ),
         ),
         child: SelectableText(
@@ -367,7 +367,7 @@ class _TypingBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = AppColors.schemeOf(context);
+    final colors = Theme.of(context).colorScheme;
     return Align(
       alignment: Alignment.centerLeft,
       child: Container(
@@ -376,7 +376,7 @@ class _TypingBubble extends StatelessWidget {
         decoration: BoxDecoration(
           color: colors.surface,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: colors.border),
+          border: Border.all(color: context.appColors.border),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -386,13 +386,13 @@ class _TypingBubble extends StatelessWidget {
               height: 14,
               child: CircularProgressIndicator(
                 strokeWidth: 2,
-                color: colors.accent,
+                color: colors.primary,
               ),
             ),
             const SizedBox(width: 10),
             Text(
               'Gemini is reading…',
-              style: TextStyle(color: colors.textSecondary, fontSize: 13),
+              style: TextStyle(color: context.appColors.textSecondary, fontSize: 13),
             ),
           ],
         ),
